@@ -570,7 +570,30 @@ async function consumeCookieDocument(chatId, doc) {
   await applyCookie(chatId, cookie);
 }
 
+// 写入前守卫：夸克 Cookie 的核心鉴权键是 __pus / __puus。
+// 聊天输入框会把 __ 当 Markdown 下划线语义吞掉（实测 2304 -> 2255 字符、
+// 8 个 __ 前缀键全丢），残缺 Cookie 存进数据库会让所有下载 412。
+// 所以键名缺失时直接拒绝写入并引导走文件通道。
+function assertQuarkCookieShape(cookie) {
+  const names = String(cookie)
+    .split(";")
+    .map((p) => p.split("=")[0].trim())
+    .filter(Boolean);
+  const missing = ["__pus", "__puus"].filter((k) => !names.includes(k));
+  if (missing.length > 0) {
+    return (
+      "Cookie 缺少核心键：" +
+      missing.join("、") +
+      "。文本大概率被聊天输入框吞了 __ 字符，已拒绝写入。" +
+      "请把 Cookie 存为纯文本 txt 文件后发 /setcookiefile，再上传该文件（文件传输逐字节保真）。"
+    );
+  }
+  return null;
+}
+
 async function applyCookie(chatId, cookie) {
+  const shapeError = assertQuarkCookieShape(cookie);
+  if (shapeError) return sendTelegramMessage(chatId, shapeError);
   const res = await tgApiJson("/api/bot/quark-cookie", {
     method: "POST",
     body: JSON.stringify({ cookie }),

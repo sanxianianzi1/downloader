@@ -346,6 +346,7 @@ jobs:
           SIZE: ${{ steps.download.outputs.size }}
           MOVED: ${{ steps.move.outputs.moved }}
           TARGET_FOLDER_PATH: ${{ github.event.client_payload.target_folder_path }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ -z "$CHAT_ID" ]; then
@@ -361,7 +362,11 @@ jobs:
               folder_part=$'\n'"目录: /${TARGET_FOLDER_PATH}（自动归档失败，暂存根目录，可 /mv 手动移动）"
             fi
           fi
-          text=$(printf '[OK] 任务完成\n文件: %s (%s MB)%s\n链接: %s' "$FILENAME" "$size_mb" "$folder_part" "$SHARE_URL")
+          attempt_part=""
+          if [ "$RUN_ATTEMPT" != "1" ]; then
+            attempt_part=$'\n'"（第 ${RUN_ATTEMPT} 次尝试成功，首次失败已自动重跑恢复，此前那条 [RETRY] 可忽略）"
+          fi
+          text=$(printf '[OK] 任务完成\n文件: %s (%s MB)%s%s\n链接: %s' "$FILENAME" "$size_mb" "$folder_part" "$attempt_part" "$SHARE_URL")
           curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${CHAT_ID}" \
             --data-urlencode "text=${text}" > /dev/null
@@ -374,6 +379,7 @@ jobs:
           DOWNLOAD_URL: ${{ steps.prep.outputs.url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PRECHECK_CODE: ${{ steps.download.outputs.precheck_code }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ -z "$CHAT_ID" ]; then
@@ -384,13 +390,19 @@ jobs:
           if [ -n "$DOWNLOAD_URL" ]; then
             link_part=$'\n'"链接: ${DOWNLOAD_URL}"
           fi
-          cookie_hint=""
-          if [ "$PRECHECK_CODE" = "412" ] || [ "$PRECHECK_CODE" = "403" ]; then
-            cookie_hint=$'\n\n'"疑似夸克 Cookie 失效。补法：浏览器登录 pan.quark.cn → F12 → 网络 → 任一请求的请求头复制完整 cookie 值，然后发给机器人："$'\n'"/setcookie <粘贴Cookie>"$'\n'"发送后会自动重试本任务，无需手动重发链接。"
+          if [ "$RUN_ATTEMPT" = "1" ]; then
+            # 首次失败：auto-retry workflow 会自动换 runner 重跑一次。
+            # 文案温和并预告重跑，避免用户误以为任务彻底失败。
+            text=$(printf '[RETRY] 第 1 次尝试失败，正在自动重跑（换新 runner 重试）...%s\n重跑成功会再发 [OK] 通知，请以那条为准；若重跑仍失败会再发 [FAIL] 并附处理方法。' "$link_part")
           else
-            cookie_hint=$'\n\n'"若反复失败，可尝试 /setcookie 更新夸克 Cookie 后发 /retry 重试。"
+            cookie_hint=""
+            if [ "$PRECHECK_CODE" = "412" ] || [ "$PRECHECK_CODE" = "403" ]; then
+              cookie_hint=$'\n\n'"疑似夸克 Cookie 失效。补法：浏览器登录 pan.quark.cn → F12 → 网络 → 任一请求的请求头复制完整 cookie 值存为 txt 文件，发给机器人："$'\n'"/setcookiefile"$'\n'"（文件方式逐字节保真；直接粘贴会被聊天输入框吞掉 __ 字符）发送后自动重试本任务。"
+            else
+              cookie_hint=$'\n\n'"若反复失败，可 /setcookiefile 更新夸克 Cookie（文件方式更稳）后发 /retry 重试。"
+            fi
+            text=$(printf '[FAIL] 重跑后仍失败（第 %s 次尝试），查看日志: %s%s%s' "$RUN_ATTEMPT" "$RUN_URL" "$link_part" "$cookie_hint")
           fi
-          text=$(printf '[FAIL] 任务失败，查看日志: %s%s%s' "$RUN_URL" "$link_part" "$cookie_hint")
           curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${CHAT_ID}" \
             --data-urlencode "text=${text}" > /dev/null || true

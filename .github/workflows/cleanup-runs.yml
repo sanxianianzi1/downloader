@@ -1,0 +1,41 @@
+# 自动清理历史 workflow runs。
+# 手动触发（workflow_dispatch）可自定义保留天数：填 0 = 删除全部历史；
+# 定时触发每天删除 KEEP_DAYS_DAYS（默认 7）之前的所有 runs。
+name: cleanup-runs
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: 保留最近几天的 runs（0 = 全删）
+        default: "0"
+
+permissions:
+  actions: write
+
+jobs:
+  delete-old-runs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 删除过期 workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_DAYS: ${{ github.event.inputs.keep_days || '7' }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "-${KEEP_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ')
+          echo "删除 ${cutoff} 之前创建的所有 workflow runs"
+          total=0
+          # runs 数量有限且每轮至少删除一个，循环必然结束
+          while :; do
+            ids=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100&created=<${cutoff}" \
+              --jq '.workflow_runs[].id' 2>/dev/null || true)
+            [ -z "$ids" ] && break
+            for id in $ids; do
+              gh api -X DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/${id}" > /dev/null 2>&1 \
+                && total=$((total + 1)) || true
+            done
+          done
+          echo "已删除 ${total} 个历史 runs"

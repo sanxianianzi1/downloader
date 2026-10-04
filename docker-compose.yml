@@ -29,6 +29,7 @@ services:
       ALLOWED_USER_IDS: ${ALLOWED_USER_IDS}
       TGSTATE_URL: http://tgstate:7860
       TGSTATE_BOT_KEY: ${TGSTATE_BOT_KEY:-}
+      TGSTATE_PUBLIC_URL: ${TGSTATE_PUBLIC_URL:-}
     restart: unless-stopped
 
 volumes:

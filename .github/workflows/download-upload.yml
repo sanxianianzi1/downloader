@@ -261,6 +261,15 @@ jobs:
           PY
           )
 
+          # 上传防御：curl -F 的 file=@路径 把逗号当多文件分隔符、分号当参数分隔符，
+          # 文件名含 , 或 ; 时报 curl 26 "Failed to open/read local data"（实测
+          # [MAI] Toumei ... Kimi to, Me ni ... 踩雷）。单文件场景直接改名成 safe
+          # 再上传，path 与 filename 一致，从此与特殊字符绝缘。
+          if [ "$path" != "bundle.zip" ] && [ "$name" != "$safe" ]; then
+            mv -f "$path" "work/$safe"
+            path="work/$safe"
+          fi
+
           echo "path=$path" >> "$GITHUB_OUTPUT"
           echo "filename=$safe" >> "$GITHUB_OUTPUT"
           echo "size=$actual" >> "$GITHUB_OUTPUT"

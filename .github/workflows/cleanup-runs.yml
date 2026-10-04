@@ -26,16 +26,21 @@ jobs:
         run: |
           set -euo pipefail
           cutoff=$(date -u -d "-${KEEP_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ')
-          echo "删除 ${cutoff} 之前创建的所有 workflow runs"
+          # 排除本 run：running 状态的 run 删不掉，不排除会让查询结果永不空、
+          # 配合吞错误的 || true 变成死循环（实测跑 19 分钟被手动取消）
+          self="${{ github.run_id }}"
+          echo "删除 ${cutoff} 之前创建的 runs（排除本 run ${self}）"
           total=0
-          # runs 数量有限且每轮至少删除一个，循环必然结束
-          while :; do
+          for round in 1 2 3; do
             ids=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100&created=<${cutoff}" \
-              --jq '.workflow_runs[].id' 2>/dev/null || true)
+              --paginate --jq ".workflow_runs[] | select(.id != ${self}) | .id" 2>/dev/null || true)
             [ -z "$ids" ] && break
-            for id in $ids; do
-              gh api -X DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/${id}" > /dev/null 2>&1 \
-                && total=$((total + 1)) || true
-            done
+            n=$(echo "$ids" | wc -l)
+            echo "第 ${round} 轮：待删 ${n} 个"
+            echo "$ids" | xargs -P 8 -I{} gh api -X DELETE \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs/{}" > /dev/null 2>&1 || true
+            total=$((total + n))
           done
-          echo "已删除 ${total} 个历史 runs"
+          left=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=1&created=<${cutoff}" \
+            --jq '.total_count' 2>/dev/null || echo '?')
+          echo "已删除 ${total} 个，剩余 ${left} 个（进行中的 run 会保留，属正常）"

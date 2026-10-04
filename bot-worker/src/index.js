@@ -54,7 +54,8 @@ const HELP_TEXT = [
   "",
   "3) Cookie 维护（夸克直链失效时用）：",
   "/setcookie <Cookie>       更新夸克 Cookie（存 VPS 数据库），成功后自动重试上次未完成任务",
-  "/setcookie                查看 Cookie 是否已设置",
+  "/setcookie                查看 Cookie 是否已设置；有文件接收状态时取消",
+  "/setcookiefile            以文件方式写入 Cookie（逐字节原样，输入框吞字符时用这个）",
   "/retry                    重试本会话最近一次下载任务",
   "/help                     查看本说明",
   "",
@@ -348,6 +349,9 @@ async function findFile(arg, cwdPath = "") {
 // ============================================================
 
 const pendingRmdir = new Map(); // chatId -> { path, expiresAt }
+// chatId -> expiresAt；/setcookiefile 后等待用户以文件形式发送 Cookie（文件传输逐字节原样，
+// 规避聊天输入框把 __ 当 Markdown 语义吞掉的问题）
+const pendingCookieFile = new Map();
 
 async function cmdLs(chatId, args) {
   const target = await resolvePath(args, cwdOf(chatId));
@@ -502,19 +506,71 @@ async function cmdRm(chatId, args) {
 async function cmdSetCookie(chatId, args) {
   const cookie = args.trim();
   if (!cookie) {
+    if (pendingCookieFile.has(chatId)) {
+      pendingCookieFile.delete(chatId);
+      return sendTelegramMessage(chatId, "已取消文件接收状态。");
+    }
     const current = await tgApiJson("/api/bot/quark-cookie");
     if (!current.ok) return sendTelegramMessage(chatId, mapTgError(current));
     const has = !!(current.data && current.data.cookie);
     return sendTelegramMessage(
       chatId,
       has
-        ? "当前已设置夸克 Cookie（内容不回显）。更新用法：/setcookie <新Cookie>"
-        : "当前未设置夸克 Cookie（将回落使用 GitHub Secret GOPEED_COOKIE）。设置用法：/setcookie <Cookie>"
+        ? "当前已设置夸克 Cookie（内容不回显）。更新用法：/setcookie <新Cookie> 或 /setcookiefile"
+        : "当前未设置夸克 Cookie（将回落使用 GitHub Secret GOPEED_COOKIE）。设置用法：/setcookie <Cookie> 或 /setcookiefile"
     );
   }
   if (cookie.length > 8000) {
     return sendTelegramMessage(chatId, `Cookie 过长（${cookie.length} 字符），请检查是否复制了多余内容。`);
   }
+  await applyCookie(chatId, cookie);
+}
+
+// 文件通道写入 Cookie：聊天输入框可能把 __ 等字符当 Markdown 语义吞掉，
+// Telegram 文件传输逐字节原样，导出 txt 发送即可。
+async function cmdSetCookieFile(chatId) {
+  pendingCookieFile.set(chatId, Date.now() + 600000);
+  await sendTelegramMessage(
+    chatId,
+    [
+      "请把 Cookie 全文保存为纯文本文件（如 cookie.txt）后直接发给我，10 分钟内有效。",
+      "文件方式逐字节保存，可避免输入框吞字符；再发一次 /setcookie 可取消。",
+    ].join("\n")
+  );
+}
+
+async function consumeCookieDocument(chatId, doc) {
+  const expiresAt = pendingCookieFile.get(chatId);
+  if (!expiresAt) return;
+  if (Date.now() > expiresAt) {
+    pendingCookieFile.delete(chatId);
+    return sendTelegramMessage(chatId, "文件接收状态已超时，请重新发送 /setcookiefile。");
+  }
+  const fileSize = Number(doc.file_size || 0);
+  if (fileSize > 65536) {
+    return sendTelegramMessage(chatId, `文件过大（${fileSize} 字节，上限 64KB），请只保留 Cookie 一行再发。`);
+  }
+  let cookie = "";
+  try {
+    const meta = await telegramCall("getFile", { file_id: doc.file_id });
+    const resp = await fetch(`${TELEGRAM_API}/file/bot${getEnv().BOT_TOKEN}/${meta.file_path}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    cookie = (await resp.text()).replace(/\s+/g, " ").trim();
+  } catch (e) {
+    return sendTelegramMessage(chatId, `读取文件失败：${e.message}`);
+  }
+  if (!cookie.includes("=") || !cookie.includes(";")) {
+    return sendTelegramMessage(
+      chatId,
+      "文件内容不像 Cookie（缺少 = 与 ; 分隔的键值结构），请导出纯文本后重试；发送 /setcookie 可取消。"
+    );
+  }
+  pendingCookieFile.delete(chatId);
+  await sendTelegramMessage(chatId, `已读取 Cookie（${cookie.length} 字符），正在写入...`);
+  await applyCookie(chatId, cookie);
+}
+
+async function applyCookie(chatId, cookie) {
   const res = await tgApiJson("/api/bot/quark-cookie", {
     method: "POST",
     body: JSON.stringify({ cookie }),
@@ -629,6 +685,7 @@ const COMMANDS = {
   rm: cmdRm,
   rmdir: cmdRmdir,
   setcookie: cmdSetCookie,
+  setcookiefile: cmdSetCookieFile,
   retry: cmdRetry,
 };
 
@@ -720,15 +777,24 @@ async function resolveDispatchFolder(chatId) {
 
 async function handleUpdate(update) {
   const message = update.message;
-  if (!message || typeof message.text !== "string") return;
+  if (!message) return;
 
   const chatId = message.chat.id;
   const fromId = message.from ? message.from.id : null;
 
   if (!isAllowedUser(fromId)) {
-    await sendTelegramMessage(chatId, "未授权用户，无法使用本机器人。");
+    if (message.text || message.document) {
+      await sendTelegramMessage(chatId, "未授权用户，无法使用本机器人。");
+    }
     return;
   }
+
+  if (message.document && pendingCookieFile.has(chatId)) {
+    await consumeCookieDocument(chatId, message.document);
+    return;
+  }
+
+  if (typeof message.text !== "string") return;
 
   const text = message.text.trim();
 

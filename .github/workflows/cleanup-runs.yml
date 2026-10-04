@@ -1,6 +1,6 @@
 # 自动清理历史 workflow runs。
 # 手动触发（workflow_dispatch）可自定义保留天数：填 0 = 删除全部历史；
-# 定时触发每天删除 KEEP_DAYS_DAYS（默认 7）之前的所有 runs。
+# 定时触发每天删除 KEEP_DAYS_DAYS（默认 2）之前的所有 runs。
 name: cleanup-runs
 
 on:
@@ -22,7 +22,7 @@ jobs:
       - name: 删除过期 workflow runs
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP_DAYS: ${{ github.event.inputs.keep_days || '7' }}
+          KEEP_DAYS: ${{ github.event.inputs.keep_days || '2' }}
         run: |
           set -euo pipefail
           cutoff=$(date -u -d "-${KEEP_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ')

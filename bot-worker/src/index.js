@@ -11,6 +11,10 @@ const TGSTATE_URL = (process.env.TGSTATE_URL || "http://tgstate:7860")
   .replace(/\/+$/, "");
 const TGSTATE_BOT_KEY = (process.env.TGSTATE_BOT_KEY || "").trim();
 const TGSTATE_HTTP_TIMEOUT_MS = 15000;
+// 对外访问 tgstate 的公开地址（与 compose 里 tgstate 的 BASE_URL 同源变量），用于拼接分享链接。
+const TGSTATE_PUBLIC_URL = (process.env.TGSTATE_PUBLIC_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
 
 const RMDIR_CONFIRM_TTL_MS = 60000;
 const MESSAGE_MAX_CHARS = 3500;
@@ -41,6 +45,7 @@ const HELP_TEXT = [
   "/pwd                      查看当前目录",
   "/cd [目录路径]            切换当前目录，/cd / 回根目录",
   "/ls [目录路径]            浏览目录，省略 = 当前目录",
+  "/links [目录路径]        列出目录内所有文件的分享链接，省略 = 当前目录",
   "/mkdir <目录路径>         创建目录（相对当前目录，支持多级）",
   "/mv <文件> [目标目录]     移动文件，省略目标 = 当前目录，/ = 根目录",
   "/rename <文件> <新文件名> 重命名文件（short_id 与分享链接保持不变）",
@@ -200,6 +205,35 @@ function renderListing(data, pathLabel) {
   return lines.join("\n");
 }
 
+// /links 渲染：目录内每个文件一条「序号. 文件名（大小）+ 分享链接」。
+// 链接用 tgstate 短链形态 {base}/d/{short_id}，不带文件名段，避免特殊字符转义问题。
+// 未配置 TGSTATE_PUBLIC_URL 时退化为 short_id 清单并给出配置提示。
+function renderLinks(data, pathLabel) {
+  const files = (data && data.files) || [];
+  const label = pathLabel || "/";
+  if (files.length === 0) {
+    return `目录 ${label} 内没有文件。子目录内容请用 /links 目录路径 单独查看。`;
+  }
+  const head = `目录 ${label} 的文件链接（${files.length} 个）：`;
+  const sorted = [...files].sort((a, b) =>
+    String(a.filename).localeCompare(String(b.filename))
+  );
+  if (!TGSTATE_PUBLIC_URL) {
+    const lines = sorted.map((f) => `  ${f.filename}  (id=${f.short_id})`);
+    return [
+      head,
+      ...lines,
+      "",
+      "未配置 TGSTATE_PUBLIC_URL，无法生成链接；在 VPS 的 .env 填写后 docker compose up -d bot 重新生效。",
+    ].join("\n");
+  }
+  const lines = sorted.map(
+    (f, i) =>
+      `${i + 1}. ${f.filename}（${humanSize(f.filesize)}）\n   ${TGSTATE_PUBLIC_URL}/d/${f.short_id}`
+  );
+  return [head, ...lines].join("\n");
+}
+
 function validateRmdirConfirm(pending, inputPath, cwdPath = "") {
   if (!pending) {
     return { ok: false, message: "没有待确认的 /rmdir 操作。用法：/rmdir <目录路径>" };
@@ -323,6 +357,17 @@ async function cmdLs(chatId, args) {
   await sendTelegramMessage(
     chatId,
     renderListing(res.data, target.path ? `/${target.path}` : "/")
+  );
+}
+
+async function cmdLinks(chatId, args) {
+  const target = await resolvePath(args, cwdOf(chatId));
+  if (!target.ok) return sendTelegramMessage(chatId, target.message);
+  const res = await tgApiJson(listUrl(target.id));
+  if (!res.ok) return sendTelegramMessage(chatId, mapTgError(res));
+  await sendTelegramMessage(
+    chatId,
+    renderLinks(res.data, target.path ? `/${target.path}` : "/")
   );
 }
 
@@ -575,6 +620,7 @@ async function cmdRmdir(chatId, args) {
 
 const COMMANDS = {
   ls: cmdLs,
+  links: cmdLinks,
   pwd: cmdPwd,
   cd: cmdCd,
   mkdir: cmdMkdir,

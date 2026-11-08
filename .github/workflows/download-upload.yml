@@ -1,0 +1,534 @@
+name: Download and upload to tgstate
+
+on:
+  repository_dispatch:
+    types: [download-task]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '下载链接（http/https/magnet/ed2k）'
+        required: true
+
+permissions: {}
+
+# 并发说明：曾用 concurrency 锁串行下载（防双 10GB 任务爆 runner 磁盘 ~14GB）。
+# 现恢复并行：多个下载任务同时跑。注意两个超大文件同时下载仍可能撑爆磁盘，
+# 大文件（>5GB）建议错开发送。
+
+env:
+  # 单个任务体积上限（GB）。GitHub 托管 runner 可用磁盘约 14GB。
+  MAX_FILESIZE_GB: "10"
+  GOPEED_CONNECTIONS: "256"
+  GOPEED_VERSION: "v1.9.3"
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Validate link
+        id: prep
+        env:
+          PAYLOAD_URL: ${{ github.event.client_payload.url || inputs.url }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          TARGET_FOLDER_ID: ${{ github.event.client_payload.target_folder_id }}
+          TGSTATE_URL: ${{ secrets.TGSTATE_URL }}
+          BOT_API_KEY: ${{ secrets.BOT_API_KEY }}
+          SECRET_COOKIE: ${{ secrets.GOPEED_COOKIE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys
+          from urllib.parse import urlparse
+
+          raw = os.environ["PAYLOAD_URL"].strip()
+          p = urlparse(raw)
+          allowed = {"http", "https", "magnet", "ed2k"}
+          if p.scheme not in allowed:
+              sys.stderr.write("::error::链接校验失败，仅支持 http/https/magnet/ed2k\n")
+              sys.exit(1)
+          if p.scheme in ("http", "https") and not p.netloc:
+              sys.stderr.write("::error::http/https 链接缺少主机名\n")
+              sys.exit(1)
+          if p.scheme in ("magnet", "ed2k") and not raw[len(p.scheme) + 1 :].lstrip("/"):
+              sys.stderr.write("::error::magnet/ed2k 链接内容为空\n")
+              sys.exit(1)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("url<<GOPEED_URL_EOF\n")
+              f.write(raw + "\n")
+              f.write("GOPEED_URL_EOF\n")
+              f.write(f"scheme={p.scheme}\n")
+          PY
+          echo "chat_id=$CHAT_ID" >> "$GITHUB_OUTPUT"
+          echo "target_folder_id=${TARGET_FOLDER_ID}" >> "$GITHUB_OUTPUT"
+
+          # Cookie 来源：bot /setcookie 存入 tgstate 数据库的为最新（优先），
+          # 取不到时回落 Secret GOPEED_COOKIE。TGSTATE_URL 指向公网可达的 tgstate。
+          base="${TGSTATE_URL//[[:space:]]/}"
+          vps_cookie=""
+          if [ -n "$BOT_API_KEY" ] && [ -n "$base" ]; then
+            vps_cookie=$(curl -fsS --max-time 10 \
+              -H "X-Bot-Key: $BOT_API_KEY" \
+              "$base/api/bot/quark-cookie" 2>/dev/null | jq -r '.cookie // empty' || true)
+          fi
+          if [ -n "$vps_cookie" ]; then
+            echo "Cookie 来源：tgstate 数据库（长度 ${#vps_cookie}）"
+          else
+            echo "::warning::tgstate 数据库无 Cookie（bot /setcookie 可设置），回落使用 Secret GOPEED_COOKIE"
+            vps_cookie="$SECRET_COOKIE"
+          fi
+
+          # 下载前保活刷新（YunX/AList 同款 __puus 惰性刷新）：剥离 __puus 请求夸克
+          # /config，服务端在 Set-Cookie 重新下发新鲜的 __puus/__pus，合并后供本次
+          # 下载使用；有轮换且管理面可用时回写 tgstate 数据库，让 bot 侧同步续命。
+          # 刷新失败一律回退原 Cookie，绝不阻断下载。bot 侧另有 90 分钟周期保活，
+          # 此处刷新兜底覆盖「手动 workflow_dispatch」与「bot 刚重启」两类场景。
+          if [ -n "$vps_cookie" ]; then
+            fresh=$(COOKIE_INPUT="$vps_cookie" python3 - <<'PY'
+          import os
+
+          original = os.environ["COOKIE_INPUT"]
+          try:
+              import urllib.request
+
+              stripped = "; ".join(
+                  p.strip()
+                  for p in original.split(";")
+                  if p.strip() and not p.strip().startswith("__puus=")
+              )
+              req = urllib.request.Request(
+                  "https://drive-pc.quark.cn/1/clouddrive/config?pr=ucpro&fr=pc",
+                  headers={
+                      "Cookie": stripped,
+                      "User-Agent": (
+                          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 "
+                          "Electron/18.3.5.12-a038f7b798 Safari/537.36 Channel/pckk_other_ch"
+                      ),
+                      "Referer": "https://pan.quark.cn/",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  set_cookies = r.headers.get_all("Set-Cookie") or []
+                  r.read()
+          except Exception:
+              print(original)
+              raise SystemExit(0)
+
+          merged = original
+          for sc in set_cookies:
+              kv = sc.split(";", 1)[0].strip()
+              eq = kv.find("=")
+              if eq <= 0:
+                  continue
+              name, value = kv[:eq], kv[eq + 1:]
+              if name not in ("__puus", "__pus"):
+                  continue
+              parts = [p.strip() for p in merged.split(";") if p.strip()]
+              idx = next((i for i, p in enumerate(parts) if p.startswith(name + "=")), -1)
+              if idx >= 0:
+                  parts[idx] = kv
+              else:
+                  parts.append(kv)
+              merged = "; ".join(parts)
+          print(merged)
+          PY
+          )
+            if [ -n "$fresh" ] && [ "$fresh" != "$vps_cookie" ]; then
+              echo "Cookie 保活：__puus/__pus 已轮换（长度 ${#vps_cookie} -> ${#fresh}）"
+              if [ -n "$BOT_API_KEY" ] && [ -n "$base" ]; then
+                curl -fsS --max-time 10 -X POST \
+                  -H "X-Bot-Key: $BOT_API_KEY" \
+                  -H "Content-Type: application/json" \
+                  -d "$(jq -n --arg c "$fresh" '{cookie: $c}')" \
+                  "$base/api/bot/quark-cookie" > /dev/null 2>&1 \
+                  && echo "新 Cookie 已回写 tgstate 数据库" \
+                  || echo "::warning::新 Cookie 回写 tgstate 失败（不影响本次下载）"
+              fi
+              vps_cookie="$fresh"
+            else
+              echo "Cookie 保活：无轮换或刷新失败，沿用现有 Cookie"
+            fi
+          fi
+
+          {
+            echo "cookie<<COOKIE_EOF"
+            echo "$vps_cookie"
+            echo "COOKIE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Gopeed Web
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o gopeed-web.zip \
+            "https://github.com/GopeedLab/gopeed/releases/download/${GOPEED_VERSION}/gopeed-web-${GOPEED_VERSION}-linux-amd64.zip"
+          unzip -q gopeed-web.zip
+          chmod +x "gopeed-web-${GOPEED_VERSION}-linux-amd64/gopeed"
+
+      - name: Download with Gopeed
+        id: download
+        env:
+          DOWNLOAD_URL: ${{ steps.prep.outputs.url }}
+          DOWNLOAD_SCHEME: ${{ steps.prep.outputs.scheme }}
+          GOPEED_COOKIE: ${{ steps.prep.outputs.cookie }}
+          GOPEED_HEADERS: ${{ secrets.GOPEED_HEADERS }}
+        run: |
+          set -euo pipefail
+
+          # 直链预检：仅作提示，绝不拦截。部分站点对探测请求（Range/HEAD 类）
+          # 返回 403/412，但 Gopeed 实际 GET 下载正常，硬失败会误杀。
+          # Cookie 真失效时会在下载阶段失败，由失败通知兜底。
+          if [ "$DOWNLOAD_SCHEME" = "http" ] || [ "$DOWNLOAD_SCHEME" = "https" ]; then
+            code=""
+            for attempt in 1 2; do
+              code=$(curl -sS -L -o /dev/null --max-time 20 -r 0-1023 -w '%{http_code}' \
+                -H "Cookie: $GOPEED_COOKIE" "$DOWNLOAD_URL" || true)
+              case "$code" in
+                200|206|416)
+                  echo "直链预检通过（HTTP $code，第 ${attempt} 次尝试）"
+                  break
+                  ;;
+                *)
+                  echo "直链预检第 ${attempt}/2 次未通过（HTTP $code），2 秒后重试..."
+                  [ "$attempt" = "2" ] || sleep 2
+                  ;;
+              esac
+            done
+            case "$code" in
+              200|206|416) ;;
+              412|403)
+                echo "precheck_code=$code" >> "$GITHUB_OUTPUT"
+                echo "::warning::直链预检 HTTP $code：通常表示 Cookie 无效或过期。仍继续 Gopeed 下载；若失败请更新 Cookie（TG 发 /setcookiefile 上传 Cookie 文件）"
+                ;;
+              *)
+                echo "precheck_code=$code" >> "$GITHUB_OUTPUT"
+                echo "::warning::直链预检 HTTP $code（重试后仍失败）。仍继续 Gopeed 下载"
+                ;;
+            esac
+          fi
+
+          mkdir -p work
+          max_bytes=$((MAX_FILESIZE_GB * 1024 * 1024 * 1024))
+
+          dir="gopeed-web-${GOPEED_VERSION}-linux-amd64"
+          "$dir/gopeed" -A 127.0.0.1 -P 9999 -d "$PWD/.gopeed-storage" &
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9999/api/v1/info > /dev/null 2>&1; then
+              break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "::error::Gopeed 服务启动失败"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          task_body=$(python3 - "$DOWNLOAD_URL" "$DOWNLOAD_SCHEME" <<'PY'
+          import json, os, sys
+
+          url, scheme = sys.argv[1], sys.argv[2]
+          req = {"url": url}
+          if scheme in ("http", "https"):
+              headers = {}
+              for line in os.environ.get("GOPEED_HEADERS", "").splitlines():
+                  name, sep, value = line.partition(":")
+                  name, value = name.strip(), value.strip()
+                  if sep and name and value:
+                      headers[name] = value
+              cookie = os.environ.get("GOPEED_COOKIE", "").strip()
+              if cookie:
+                  headers.setdefault("Cookie", cookie)
+              if headers:
+                  req["extra"] = {"method": "GET", "header": headers, "body": ""}
+          print(json.dumps({
+              "req": req,
+              "opts": {
+                  "path": os.path.abspath("work"),
+                  "extra": {"connections": int(os.environ["GOPEED_CONNECTIONS"])},
+              },
+          }))
+          PY
+          )
+
+          resp=$(curl -fsS -X POST http://127.0.0.1:9999/api/v1/tasks \
+            -H "Content-Type: application/json" \
+            -d "$task_body")
+          if [ "$(jq -r '.code' <<<"$resp")" != "0" ]; then
+            echo "::error::Gopeed 创建任务失败: $(jq -r '.msg' <<<"$resp")"
+            exit 1
+          fi
+          task_id=$(jq -r '.data' <<<"$resp")
+
+          status=""
+          for i in $(seq 1 600); do
+            resp=$(curl -fsS "http://127.0.0.1:9999/api/v1/tasks/${task_id}" || true)
+            status=$(jq -r '.data.status // "unknown"' <<<"$resp")
+            case "$status" in
+              done)
+                break
+                ;;
+              error)
+                echo "::error::Gopeed 下载失败"
+                err=$(jq -c '{detail: .data.detail, errMsg: .data.errMsg, error: .data.error}' <<<"$resp" 2>/dev/null || true)
+                if [ -n "$err" ] && [ "$err" != '{"detail":null,"errMsg":null,"error":null}' ]; then
+                  echo "Gopeed 错误详情: $err"
+                fi
+                exit 1
+                ;;
+            esac
+            if [ $((i % 12)) -eq 0 ]; then
+              downloaded=$(jq -r '.data.progress.downloaded // 0' <<<"$resp")
+              echo "下载中：${downloaded} 字节"
+            fi
+            sleep 5
+          done
+          if [ "$status" != "done" ]; then
+            echo "::error::下载超时（约 50 分钟），可在限制与调优里调大任务时长"
+            exit 1
+          fi
+
+          mapfile -t files < <(find work -type f -printf '%s\t%p\n' | sort -nr)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::Gopeed 完成后 work/ 目录为空"
+            exit 1
+          fi
+
+          # 剔除 Gopeed 残留的未完成分片（*.part）：任务标记 done 时个别文件
+          # 仍可能是半成品。混进网盘后既不可用，又因 TG 主消息不完整而无法
+          # 从 tgstate 删除。这里直接排除出统计与打包，源文件留给 runner 回收。
+          part_files=()
+          complete_files=()
+          for entry in "${files[@]}"; do
+            case "${entry#*$'\t'}" in
+              *.part) part_files+=("$entry") ;;
+              *) complete_files+=("$entry") ;;
+            esac
+          done
+          if [ "${#part_files[@]}" -gt 0 ]; then
+            echo "::warning::剔除 ${#part_files[@]} 个未完成的 .part 残留（不上传）："
+            printf '  %s\n' "${part_files[@]#*$'\t'}" || true
+          fi
+          if [ "${#complete_files[@]}" -eq 0 ]; then
+            echo "::error::下载未完成：work/ 里只有 .part 半成品，没有完整文件可上传"
+            exit 1
+          fi
+          files=("${complete_files[@]}")
+
+          total=0
+          while IFS=$'\t' read -r sz _; do
+            total=$((total + sz))
+          done < <(printf '%s\n' "${files[@]}")
+
+          if [ "$total" -gt "$max_bytes" ]; then
+            echo "::error::文件合计超过 ${MAX_FILESIZE_GB}GB 上限（${total} 字节）"
+            exit 1
+          fi
+
+          if [ "${#files[@]}" -eq 1 ]; then
+            IFS=$'\t' read -r actual path <<< "${files[0]}"
+            name=$(basename "$path")
+          else
+            name="download.zip"
+            path="bundle.zip"
+            # 边打包边腾空间按需启用：仅当「源文件 + 压缩包」同时驻留磁盘可能
+            # 撑爆 runner 时才在打包后删除源文件。DEFLATED 对媒体文件压缩率趋近
+            # 于零，按未压缩估算最坏情况；余量充足的小任务保持原逻辑（保留源文件）。
+            avail_bytes=$(df -B1 --output=avail . | tail -1 | tr -dc '0-9')
+            worst=$((total * 2))
+            if [ "$worst" -gt $((avail_bytes * 90 / 100)) ]; then
+              echo "多文件合计 $total 字节，与压缩包同时驻留可能超出可用磁盘（$avail_bytes 字节），启用边打包边腾空间"
+              hatch=1
+            else
+              echo "多文件合计 $total 字节，磁盘余量充足，按常规方式打包"
+              hatch=0
+            fi
+            HATCH_ZIP=$hatch python3 - <<'PY'
+          import os, zipfile
+
+          # HatchZip 模式（仅大任务启用）：每个文件写进压缩包后立刻删除原文件，
+          # 峰值磁盘占用从「源文件 + 压缩包」降到约等于两者中较大者，~14GB 的
+          # runner 磁盘能装下原本会爆盘的大任务。
+          # bundle.zip 建在 work/ 之外，删源文件不影响压缩包本身。
+          hatch = os.environ.get("HATCH_ZIP") == "1"
+          with zipfile.ZipFile("bundle.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for root, _, names in os.walk("work"):
+                  for n in sorted(names):
+                      if n.endswith(".part"):
+                          continue
+                      full = os.path.join(root, n)
+                      zf.write(full, os.path.relpath(full, "work"))
+                      if hatch:
+                          os.remove(full)
+          PY
+            actual=$(stat -c %s "$path")
+            if [ "$actual" -gt "$max_bytes" ]; then
+              echo "::error::打包后超过 ${MAX_FILESIZE_GB}GB 上限"
+              exit 1
+            fi
+          fi
+
+          safe=$(python3 - "$name" <<'PY'
+          import sys
+          name = sys.argv[1]
+          safe = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in name)
+          safe = safe.strip("._") or "download.bin"
+          print(safe[-150:] if len(safe) > 150 else safe)
+          PY
+          )
+
+          # 上传防御：curl -F 的 file=@路径 把逗号当多文件分隔符、分号当参数分隔符，
+          # 文件名含 , 或 ; 时报 curl 26 "Failed to open/read local data"（实测
+          # [MAI] Toumei ... Kimi to, Me ni ... 踩雷）。单文件场景直接改名成 safe
+          # 再上传，path 与 filename 一致，从此与特殊字符绝缘。
+          if [ "$path" != "bundle.zip" ] && [ "$name" != "$safe" ]; then
+            mv -f "$path" "work/$safe"
+            path="work/$safe"
+          fi
+
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "filename=$safe" >> "$GITHUB_OUTPUT"
+          echo "size=$actual" >> "$GITHUB_OUTPUT"
+          echo "下载完成：$safe ($actual 字节，共 ${#files[@]} 个文件)"
+
+      - name: Upload to tgstate
+        id: upload
+        env:
+          TGSTATE_URL: ${{ secrets.TGSTATE_URL }}
+          TGSTATE_PASSWORD: ${{ secrets.TGSTATE_PASSWORD }}
+          FILE_PATH: ${{ steps.download.outputs.path }}
+          FILENAME: ${{ steps.download.outputs.filename }}
+        run: |
+          set -euo pipefail
+          # 防御：Secret 末尾若粘进空白字符（空格/Tab），先剥掉再拼 URL
+          base="${TGSTATE_URL//[[:space:]]/}"
+          base="${base%/}"
+
+          curl -sS -c cookies.txt \
+            -H "Content-Type: application/json" \
+            -H "Origin: $base" \
+            -d "$(jq -n --arg p "$TGSTATE_PASSWORD" '{password: $p}')" \
+            "$base/api/auth/login" | jq -e '.status == "ok"' > /dev/null
+
+          http_code=$(curl -sS -b cookies.txt -o upload_resp.txt -w '%{http_code}' \
+            -H "Origin: $base" \
+            -F "file=@${FILE_PATH};filename=${FILENAME}" \
+            "$base/api/upload")
+          if [ "$http_code" != "200" ]; then
+            echo "::error::tgstate 上传失败（HTTP $http_code）：$(head -c 2000 upload_resp.txt)"
+            exit 1
+          fi
+
+          short_id=$(jq -er '.short_id' upload_resp.txt)
+          share_url="$base/d/$short_id"
+          echo "share_url=$share_url" >> "$GITHUB_OUTPUT"
+          echo "short_id=$short_id" >> "$GITHUB_OUTPUT"
+          echo "上传完成：$share_url"
+
+      - name: Move to target folder
+        id: move
+        if: success()
+        env:
+          TGSTATE_URL: ${{ secrets.TGSTATE_URL }}
+          BOT_API_KEY: ${{ secrets.BOT_API_KEY }}
+          SHORT_ID: ${{ steps.upload.outputs.short_id }}
+          TARGET_FOLDER_ID: ${{ steps.prep.outputs.target_folder_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SHORT_ID" ] || [ -z "$TARGET_FOLDER_ID" ]; then
+            echo "无目标目录（根目录派发或手动触发），文件保留在根目录"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$BOT_API_KEY" ]; then
+            echo "::warning::secret BOT_API_KEY 未配置，无法自动归档，文件暂存根目录"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${TGSTATE_URL//[[:space:]]/}"
+          base="${base%/}"
+          code=$(curl -sS -o move_resp.txt -w '%{http_code}' \
+            -X POST \
+            -H "X-Bot-Key: $BOT_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"target_folder_id\": $TARGET_FOLDER_ID}" \
+            "$base/api/bot/files/$SHORT_ID/move") || code=000
+          if [ "$code" = "200" ]; then
+            echo "文件已归档到目标目录（folder_id=$TARGET_FOLDER_ID）"
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::移动到目标目录失败（HTTP $code）：$(head -c 500 move_resp.txt 2>/dev/null || true)"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send result to Telegram
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ steps.prep.outputs.chat_id }}
+          SHARE_URL: ${{ steps.upload.outputs.share_url }}
+          FILENAME: ${{ steps.download.outputs.filename }}
+          SIZE: ${{ steps.download.outputs.size }}
+          MOVED: ${{ steps.move.outputs.moved }}
+          TARGET_FOLDER_PATH: ${{ github.event.client_payload.target_folder_path }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CHAT_ID" ]; then
+            echo "无 chat_id（手动触发），结果见上方日志"
+            exit 0
+          fi
+          size_mb=$((SIZE / 1024 / 1024))
+          folder_part=""
+          if [ -n "$TARGET_FOLDER_PATH" ]; then
+            if [ "$MOVED" = "true" ]; then
+              folder_part=$'\n'"目录: /${TARGET_FOLDER_PATH}"
+            else
+              folder_part=$'\n'"目录: /${TARGET_FOLDER_PATH}（自动归档失败，暂存根目录，可 /mv 手动移动）"
+            fi
+          fi
+          attempt_part=""
+          if [ "$RUN_ATTEMPT" != "1" ]; then
+            attempt_part=$'\n'"（第 ${RUN_ATTEMPT} 次尝试成功，首次失败已自动重跑恢复，此前那条 [RETRY] 可忽略）"
+          fi
+          text=$(printf '[OK] 任务完成\n文件: %s (%s MB)%s%s\n链接: %s' "$FILENAME" "$size_mb" "$folder_part" "$attempt_part" "$SHARE_URL")
+          curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${text}" > /dev/null
+
+      - name: Send failure to Telegram
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          DOWNLOAD_URL: ${{ steps.prep.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PRECHECK_CODE: ${{ steps.download.outputs.precheck_code }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CHAT_ID" ]; then
+            echo "::warning::缺少 chat_id，无法发送失败通知"
+            exit 0
+          fi
+          link_part=""
+          if [ -n "$DOWNLOAD_URL" ]; then
+            link_part=$'\n'"链接: ${DOWNLOAD_URL}"
+          fi
+          if [ "$RUN_ATTEMPT" = "1" ]; then
+            # 首次失败：auto-retry workflow 会自动换 runner 重跑一次。
+            # 文案温和并预告重跑，避免用户误以为任务彻底失败。
+            text=$(printf '[RETRY] 第 1 次尝试失败，正在自动重跑（换新 runner 重试）...%s\n重跑成功会再发 [OK] 通知，请以那条为准；若重跑仍失败会再发 [FAIL] 并附处理方法。' "$link_part")
+          else
+            cookie_hint=""
+            if [ "$PRECHECK_CODE" = "412" ] || [ "$PRECHECK_CODE" = "403" ]; then
+              cookie_hint=$'\n\n'"疑似夸克 Cookie 失效。补法：浏览器登录 pan.quark.cn → F12 → 网络 → 任一请求的请求头复制完整 cookie 值存为 txt 文件，发给机器人："$'\n'"/setcookiefile"$'\n'"（文件方式逐字节保真；直接粘贴会被聊天输入框吞掉 __ 字符）发送后可发 /retry 重试本任务。"
+            else
+              cookie_hint=$'\n\n'"若反复失败，可 /setcookiefile 更新夸克 Cookie（文件方式更稳）后发 /retry 重试。"
+            fi
+            text=$(printf '[FAIL] 重跑后仍失败（第 %s 次尝试），查看日志: %s%s%s' "$RUN_ATTEMPT" "$RUN_URL" "$link_part" "$cookie_hint")
+          fi
+          curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${text}" > /dev/null || true

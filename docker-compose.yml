@@ -1,0 +1,40 @@
+services:
+  tgstate:
+    build: ./tgstate-rust
+    container_name: tgstate
+    ports:
+      - "8000:7860"
+    volumes:
+      - tgstate_data:/app/data
+    environment:
+      PORT: "7860"
+      BASE_URL: ${TGSTATE_PUBLIC_URL}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-0}
+      # 并发调优实测（1GB×2轮×4档，2026-10）：有效并发 = min(两闸)，全局闸上限 4；
+      # N=4 出现 14 次 429，拐点在 2（N=3 增益 +1.2%），吞吐天花板 ~7 MiB/s（TG 服务端限速）
+      UPLOAD_CONCURRENCY: ${UPLOAD_CONCURRENCY:-2}
+      MAX_UPLOAD_BODY_SIZE_MB: ${MAX_UPLOAD_BODY_SIZE_MB:-10240}
+      TG_SEND_GLOBAL_CONCURRENCY: ${TG_SEND_GLOBAL_CONCURRENCY:-2}
+      BOT_API_KEY: ${TGSTATE_BOT_KEY:-}
+    restart: unless-stopped
+
+  bot:
+    build: ./bot-worker
+    container_name: tg-download-bot
+    env_file: .env
+    command: ["node", "--no-network-family-autoselection", "--dns-result-order=ipv4first", "src/index.js"]
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_REPO: ${GITHUB_REPO}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS}
+      TGSTATE_URL: http://tgstate:7860
+      TGSTATE_BOT_KEY: ${TGSTATE_BOT_KEY:-}
+      TGSTATE_PUBLIC_URL: ${TGSTATE_PUBLIC_URL:-}
+      # 夸克 Cookie 保活刷新周期（分钟），0 = 关闭
+      QUARK_KEEPALIVE_MINUTES: ${QUARK_KEEPALIVE_MINUTES:-90}
+    restart: unless-stopped
+
+volumes:
+  tgstate_data:

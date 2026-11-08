@@ -68,7 +68,7 @@ workflow 必须在仓库**默认分支**。GitHub 上只放代码，不要提交
 | `BOT_TOKEN` | **下载 Bot** 的 Token（把结果发回会话） |
 | `RCLONE_CONF` | 可选，本机 `rclone.conf` 全文（含 remote 段，不要提交到仓库）。留空则跳过转存 |
 | `RCLONE_DEST` | 可选，rclone 目标，如 `remote2:downloads`（可放 Actions Variables，也可放 Secrets）。留空则跳过转存 |
-| `GOPEED_COOKIE` | 可选兜底 Cookie（推荐改用 TG `/setcookie`，见 Cookie 维护节）|
+| `GOPEED_COOKIE` | 可选兜底 Cookie（推荐改用 TG `/setcookiefile`，见 Cookie 维护节）|
 | `GOPEED_HEADERS` | 可选，额外 HTTP 头，每行 `Name: value`，如 `User-Agent: ...` |
 
 再创建 **GitHub PAT**（Bot 用它触发 workflow）：
@@ -81,15 +81,24 @@ workflow 必须在仓库**默认分支**。GitHub 上只放代码，不要提交
 
 `RCLONE_CONF` 与 `RCLONE_DEST` 的写法见下面「rclone 转存」。
 
-## Cookie 维护（推荐用 /setcookie）
+## Cookie 维护（/setcookiefile 文件方式）
 
-需要登录态才能下的直链（如夸克）要带 Cookie。**推荐流程**：在 TG 里发给机器人
-`/setcookie <Cookie整串>`——Cookie 存入 VPS 的 tgstate 数据库，之后每次下载任务
-开始时 workflow 自动取最新的用，无需再碰 GitHub Secret。
-`/setcookie` 成功后会自动重试最近一次未完成的下载任务；也可用 `/retry` 手动重试。
+需要登录态才能下的直链（如夸克）要带 Cookie。**设置流程**：把 Cookie 全文保存为
+纯文本 txt 文件，在 TG 里发送 `/setcookiefile`，再上传该文件——Cookie 逐字节存入
+VPS 的 tgstate 数据库，之后每次下载任务开始时 workflow 自动取最新的用，无需再碰
+GitHub Secret。聊天输入框会把 `__` 字符当 Markdown 语义吞掉，直接粘贴文本写入已停用，
+`/setcookie` 仅用于查看状态与取消文件接收。
+旧任务需要重试时发 `/retry`（手动重派最近一次任务）。
 
 取 Cookie：浏览器登录 pan.quark.cn → F12 开发者工具 → Network → 随便点一个请求
-→ Request Headers 里 `Cookie:` 整段复制（不带前缀）。
+→ Request Headers 里 `Cookie:` 整段复制（不带前缀），存为 txt 文件。
+
+**自动保活（无需再手动换 Cookie）**：夸克会话的关键字段 `__puus` 约 3 小时过期，过期后直链全部 412。
+机器人会按周期（默认 90 分钟）剥离 `__puus` 请求一次夸克轻量接口 `/1/clouddrive/config`，
+服务端就会在响应里重新下发新鲜的 `__puus`/`__pus`，自动合并回存——Cookie 因此长期有效，
+这是 [YunX](https://github.com/CYQawa/YunX) 与 AList（AlistGo/alist#830）同款的会话续期机制。
+连续 3 轮刷新失败（判定登录态真失效，约 4.5 小时）时机器人会主动发消息告警；
+手动 `/setcookiefile` 写入后告警自动解除。周期由 `QUARK_KEEPALIVE_MINUTES` 控制（分钟，0 关闭保活）。
 
 Secret `GOPEED_COOKIE` 降级为兜底：数据库里没设 Cookie 时才用它。
 
@@ -256,7 +265,11 @@ docker compose up -d --build
 | 分享安全 | 短链即访问凭据，私密文件在 tgstate 网页给该文件设分享密码 |
 | 两个 Bot | 下载 Bot 与网盘 Bot 必须分开，不能共用 Token |
 | rclone | Secret `RCLONE_CONF` + `RCLONE_DEST`；下载完成后 `rclone copy work <目标>` |
-| Cookie | 优先 tgstate 数据库（bot `/setcookie` 设置，workflow 实时拉取）；未设置时回落 Secret `GOPEED_COOKIE`（可选 `GOPEED_HEADERS`）|
+| Cookie | 优先 tgstate 数据库（bot `/setcookiefile` 设置，workflow 实时拉取）；未设置时回落 Secret `GOPEED_COOKIE`（可选 `GOPEED_HEADERS`）|
+| Cookie 保活 | bot 内置 __puus 周期刷新（YunX/AList 同款），`QUARK_KEEPALIVE_MINUTES` 默认 90 分钟、0 关闭；连续失效会 TG 告警 |
+
+多文件任务打包 zip 时按需启用「边打包边腾空间」（HatchZip 思路）：仅当「源文件 + 压缩包」同时驻留磁盘可能撑爆 runner（按未压缩估算最坏情况）时，才在每个文件写进压缩包后立刻删除原文件，磁盘峰值降到约等于两者中较大者；余量充足的小任务保持常规打包、源文件不动。Gopeed 残留的 `*.part` 半成品一律剔除、不上传。
+
 ## 故障排查
 
 | 现象 | 原因与处理 |
@@ -267,7 +280,9 @@ docker compose up -d --build
 | 「任务提交失败：422」 | workflow 未在默认分支，或 event 名不是 `download-task` |
 | Actions 登录网盘失败 | `TGSTATE_URL` / `TGSTATE_PASSWORD` 错误；URL 结尾不要 `/` |
 | rclone copy 失败 | `RCLONE_CONF` 不是 conf 全文，或 `RCLONE_DEST` 远端名与 conf 里的 `[remote]` 对不上 |
-| 直链 403 / 需要登录 | TG 发 `/setcookie <浏览器Cookie>`（自动重试）；或兜底补 Secret `GOPEED_COOKIE` |
+| 直链 403 / 需要登录 | TG 发 `/setcookiefile` 上传 Cookie 文件（设置后可 `/retry`）；或兜底补 Secret `GOPEED_COOKIE` |
+| 收到「夸克 Cookie 保活失效」告警 | 存储的夸克会话已真失效（连续 3 轮刷新失败）。按告警提示重新导出 Cookie，`/setcookiefile` 上传即可；保活会自动恢复 |
+| 网盘里有删不掉的 `.part` 文件 | 上传半途而废的残留，tgstate 因 TG 主消息不完整而拒绝删除。VPS 仓库目录运行 `./tools/clean-part-residue.sh`（先预览，`--apply` 真删） |
 | tgstate 提示缺 Bot/频道 | 网页设置里填的是网盘 Bot，不是下载 Bot |
 | 网页登录后立刻掉线 | HTTPS 反代时设置 `COOKIE_SECURE=1` |
 | 频道不同步新文件 | 网盘 Bot 与下载 Bot 共用了 Token，拆成两个 |

@@ -161,7 +161,7 @@ handler 在 `api_bot.rs` 内与 `/api/bot/*` 共用（单一实现两处挂载�
 
 ### 配套（不在本补丁内）
 
-- bot-worker：/setcookie（写 + 自动重试最近任务）、/retry（手动重试）
+- bot-worker：/setcookie（仅写入 Cookie，不再自动重派旧任务）、/retry（手动重试）
 - workflow：Validate link 步骤优先从 tgstate 拉 Cookie，回落 Secret GOPEED_COOKIE；
   失败通知在预检 412/403 时提示 /setcookie 补法
 

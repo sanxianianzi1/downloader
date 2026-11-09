@@ -1,0 +1,2135 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 6b10bba..b1fc4f9 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1991,7 +1991,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "tgstate"
+-version = "2.1.1"
++version = "2.1.7"
+ dependencies = [
+  "argon2",
+  "async-stream",
+diff --git a/app/static/css/style.css b/app/static/css/style.css
+index 45b7687..f356de1 100644
+--- a/app/static/css/style.css
++++ b/app/static/css/style.css
+@@ -641,3 +641,97 @@ input[type="checkbox"] {
+         width: 100%;
+     }
+ }
++
++/* ============================================================
++   目录管理（文件管理页）
++   ============================================================ */
++
++.crumbs {
++    display: flex;
++    align-items: center;
++    flex-wrap: wrap;
++    gap: var(--spacing-xs);
++    font-size: var(--font-size-sm);
++    color: var(--text-secondary);
++    min-height: 32px;
++}
++
++.crumbs a {
++    color: var(--accent-color);
++    text-decoration: none;
++    cursor: pointer;
++    padding: 2px 6px;
++    border-radius: var(--radius-sm);
++}
++
++.crumbs a:hover {
++    background: var(--bg-hover);
++}
++
++.crumbs .crumb-current {
++    font-weight: 600;
++    color: var(--text-primary);
++    padding: 2px 6px;
++}
++
++.crumbs .crumb-sep {
++    color: var(--text-tertiary);
++}
++
++.folder-grid {
++    display: grid;
++    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
++    gap: var(--spacing-sm);
++}
++
++.folder-card {
++    display: flex;
++    align-items: center;
++    gap: var(--spacing-sm);
++    padding: var(--spacing-sm) var(--spacing-md);
++    background: var(--bg-surface);
++    border: 1px solid var(--border-light);
++    border-radius: var(--radius-md);
++    box-shadow: var(--shadow-sm);
++}
++
++.folder-card:hover {
++    background: var(--bg-hover);
++}
++
++.folder-card .folder-icon {
++    flex-shrink: 0;
++    color: var(--accent-color);
++}
++
++.folder-card .folder-open {
++    flex: 1;
++    min-width: 0;
++    cursor: pointer;
++    background: none;
++    border: none;
++    padding: 0;
++    text-align: left;
++    font: inherit;
++    color: var(--text-primary);
++}
++
++.folder-card .folder-name {
++    display: block;
++    font-weight: 600;
++    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
++}
++
++.folder-card .folder-meta {
++    display: block;
++    font-size: var(--font-size-sm);
++    color: var(--text-tertiary);
++}
++
++.folder-card .folder-actions {
++    display: flex;
++    gap: 2px;
++    flex-shrink: 0;
++}
+diff --git a/app/static/js/main.js b/app/static/js/main.js
+index 3f94d72..04e24dd 100644
+--- a/app/static/js/main.js
++++ b/app/static/js/main.js
+@@ -33,6 +33,9 @@ document.addEventListener('DOMContentLoaded', () => {
+         lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>',
+         lockBadge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>',
+         trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>',
++        folder: '<svg class="folder-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>',
++        move: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 12 12"></path><path d="M14 2h8v8"></path><path d="M20 13v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7"></path></svg>',
++        pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>',
+     };
+ 
+     const fmtDate = (v) => {
+@@ -66,6 +69,120 @@ document.addEventListener('DOMContentLoaded', () => {
+         return itemOrId.dataset.fileId || itemOrId.dataset.shortId || '';
+     }
+ 
++    // ================================================================
++    // 目录管理（面板侧）——导航为 SSR 纯链接，JS 只负责 CRUD 弹窗
++    // ================================================================
++    const folderGrid = document.getElementById('folder-grid');
++    const mkdirBtn = document.getElementById('mkdir-btn');
++    // 服务端注入的当前目录 id（'' = 根目录）
++    const currentFolderId = (window.__CURRENT_FOLDER__ || '').toString();
++
++    async function apiJson(url, options = {}) {
++        const res = await fetch(url, { credentials: 'same-origin', ...options });
++        if (res.status === 401) {
++            Toast.show('请先登录', 'error');
++            setTimeout(() => { location.href = '/pwd.html'; }, 500);
++            const err = new Error('unauthorized');
++            err.silent = true;
++            throw err;
++        }
++        const data = await res.json().catch(() => ({}));
++        return { ok: res.ok, status: res.status, data };
++    }
++
++    if (folderGrid) {
++        folderGrid.addEventListener('click', async (e) => {
++            const renBtn = e.target.closest('.folder-rename');
++            if (renBtn) {
++                e.preventDefault();
++                const fid = renBtn.dataset.fid;
++                const name = await Modal.prompt('目录改名', '输入新名称。', { value: renBtn.dataset.name, okText: '保存' });
++                if (name === null || !name.trim()) return;
++                const { ok, status, data } = await apiJson('/api/folders/' + encodeURIComponent(fid) + '/rename', {
++                    method: 'POST',
++                    headers: { 'Content-Type': 'application/json' },
++                    body: JSON.stringify({ name }),
++                });
++                if (ok) location.reload();
++                else Toast.show((data && data.message) || ('改名失败(' + status + ')'), 'error');
++                return;
++            }
++            const delBtn = e.target.closest('.folder-delete');
++            if (delBtn) {
++                e.preventDefault();
++                const fid = delBtn.dataset.fid;
++                const name = delBtn.dataset.name;
++                const ok = await Modal.confirm('删除目录',
++                    '「' + name + '」及其全部子目录与文件将被永久删除（TG 无回收站），确定？',
++                    { danger: true, okText: '删除' });
++                if (!ok) return;
++                const { ok: okRes, status, data } = await apiJson('/api/folders/' + encodeURIComponent(fid), { method: 'DELETE' });
++                if (okRes) {
++                    const d = data || {};
++                    Toast.show('已删除 ' + (d.folders_deleted || 0) + ' 个目录、' + (d.files_deleted || 0) + ' 个文件'
++                        + ((d.failed_files || []).length ? '（' + d.failed_files.length + ' 个文件删除失败，已移回根目录）' : ''));
++                    location.reload();
++                } else {
++                    Toast.show((data && data.message) || ('删除失败(' + status + ')'), 'error');
++                }
++            }
++        });
++    }
++
++    if (mkdirBtn) {
++        mkdirBtn.addEventListener('click', async () => {
++            const name = await Modal.prompt('新建目录', '输入目录名称。', { okText: '创建' });
++            if (name === null || !name.trim()) return;
++            const body = { name };
++            if (currentFolderId !== '') body.parent_id = Number(currentFolderId);
++            const { ok, status, data } = await apiJson('/api/folders', {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify(body),
++            });
++            if (ok) location.reload();
++            else Toast.show((data && data.message) || ('创建失败(' + status + ')'), 'error');
++        });
++    }
++
++    // ---- 文件移动 / 改名（面板） ----
++    async function moveFile(fileId, filename) {
++        if (!fileId) { Toast.show('缺少文件标识', 'error'); return; }
++        const target = await Modal.prompt('移动文件',
++            '将「' + (filename || fileId) + '」移动到目标目录。输入目录路径：/ 表示根目录，/影视/2026 表示逐层目录。',
++            { placeholder: '/', okText: '移动' });
++        if (target === null) return;
++        const { ok, status, data } = await apiJson('/api/files/' + encodeURIComponent(fileId) + '/move', {
++            method: 'POST',
++            headers: { 'Content-Type': 'application/json' },
++            body: JSON.stringify({ target_path: target }),
++        });
++        if (ok) location.reload();
++        else Toast.show((data && data.message) || ('移动失败(' + status + ')'), 'error');
++    }
++
++    async function renameFile(fileId, filename) {
++        if (!fileId) { Toast.show('缺少文件标识', 'error'); return; }
++        const name = await Modal.prompt('文件改名', '输入新文件名。', { value: filename || '', okText: '保存' });
++        if (name === null || !name.trim()) return;
++        const { ok, status, data } = await apiJson('/api/files/' + encodeURIComponent(fileId) + '/rename', {
++            method: 'PATCH',
++            headers: { 'Content-Type': 'application/json' },
++            body: JSON.stringify({ filename: name }),
++        });
++        if (ok) {
++            const it = document.getElementById(rowDomId(fileId));
++            if (it) {
++                it.dataset.filename = name;
++                const span = it.querySelector('.ftext');
++                if (span) span.textContent = name;
++            }
++            Toast.show('文件已改名');
++        } else {
++            Toast.show((data && data.message) || ('改名失败(' + status + ')'), 'error');
++        }
++    }
++
+     function absoluteFileUrl(item) {
+         let url = (item && item.dataset.fileUrl) || '';
+         if (!url && item && item.dataset.shortId) url = '/d/' + item.dataset.shortId;
+@@ -77,6 +194,9 @@ document.addEventListener('DOMContentLoaded', () => {
+     // ---- SSE 实时新增（仅文件管理页，事件来自 Bot 摄取，含真实 composite file_id） ----
+     function addNewFileElement(file) {
+         if (!listBody) return;
++        // 文件归属目录与当前视图不一致时不插入（新文件总是落根目录）
++        const evFolder = (file.folder_id == null ? '' : String(file.folder_id));
++        if (evFolder !== currentFolderId) return;
+         const ph = listBody.querySelector('td[colspan]');
+         if (ph) { const tr = ph.closest('tr'); if (tr) tr.remove(); }
+ 
+@@ -106,6 +226,8 @@ document.addEventListener('DOMContentLoaded', () => {
+                 <a href="${url}" class="btn btn-ghost btn-icon btn-sm" title="下载">${ICO.download}</a>
+                 <button type="button" class="btn btn-ghost btn-icon btn-sm copy-link-btn" title="复制链接">${ICO.copy}</button>
+                 <button type="button" class="btn btn-ghost btn-icon btn-sm js-lock" title="分享密码">${ICO.lock}</button>
++                <button type="button" class="btn btn-ghost btn-icon btn-sm js-move" title="移动到目录">${ICO.move}</button>
++                <button type="button" class="btn btn-ghost btn-icon btn-sm js-rename" title="改名">${ICO.pencil}</button>
+                 <button type="button" class="btn btn-ghost btn-icon btn-sm js-delete" data-file-id="${fid}" title="删除">${ICO.trash}</button>
+             </div></td>`;
+         listBody.prepend(tr);
+@@ -199,6 +321,20 @@ document.addEventListener('DOMContentLoaded', () => {
+             const it = delBtn.closest('.file-item');
+             const id = apiIdFor(it) || delBtn.dataset.fileId;
+             deleteFile(id, it && it.dataset.filename);
++            return;
++        }
++        const moveBtn = e.target.closest('.js-move');
++        if (moveBtn) {
++            e.preventDefault();
++            const it = moveBtn.closest('.file-item');
++            moveFile(apiIdFor(it), it && it.dataset.filename);
++            return;
++        }
++        const renFileBtn = e.target.closest('.js-rename');
++        if (renFileBtn) {
++            e.preventDefault();
++            const it = renFileBtn.closest('.file-item');
++            renameFile(apiIdFor(it), it && it.dataset.filename);
+         }
+     });
+ 
+@@ -276,6 +412,34 @@ document.addEventListener('DOMContentLoaded', () => {
+         } catch (e) { Toast.show('网络错误', 'error'); }
+     });
+ 
++    const batchMove = document.getElementById('batch-move-btn');
++    if (batchMove) batchMove.addEventListener('click', async () => {
++        const items = sel();
++        if (!items.length) return;
++        const target = await Modal.prompt('批量移动',
++            '将选中的 ' + items.length + ' 个文件移动到目标目录。输入目录路径：/ 表示根目录，/影视/2026 表示逐层目录。',
++            { placeholder: '/', okText: '移动' });
++        if (target === null) return;
++        const ids = items.map((c) => c.dataset.fileId).filter(Boolean);
++        let done = 0, fail = 0;
++        for (const id of ids) {
++            try {
++                const { ok } = await apiJson('/api/files/' + encodeURIComponent(id) + '/move', {
++                    method: 'POST',
++                    headers: { 'Content-Type': 'application/json' },
++                    body: JSON.stringify({ target_path: target }),
++                });
++                if (ok) done++; else fail++;
++            } catch (e) { fail++; }
++        }
++        if (fail) {
++            Toast.show('移动完成：' + done + ' 成功，' + fail + ' 失败', 'error');
++            setTimeout(() => location.reload(), 1500);
++        } else {
++            location.reload();
++        }
++    });
++
+     // ---- 上传 ----
+     if (zone && picker) {
+         picker.addEventListener('click', (e) => e.stopPropagation());
+diff --git a/app/templates/index.html b/app/templates/index.html
+index 2353565..391e076 100644
+--- a/app/templates/index.html
++++ b/app/templates/index.html
+@@ -34,10 +34,31 @@
+     <div id="prog-zone" class="stack" style="gap:10px;"></div>
+     <div id="done-zone" class="stack" style="gap:10px;"></div>
+ 
++    <div class="between wrap" style="gap:10px;">
++        <nav id="folder-crumbs" class="crumbs" aria-label="目录路径">{% for n in trail %}{% if loop.last %}<span class="crumb-current">{{ n.name }}</span>{% else %}<a href="{% if n.id == 0 %}/{% else %}/?folder_id={{ n.id }}{% endif %}">{{ n.name }}</a><span class="crumb-sep">/</span>{% endif %}{% endfor %}</nav>
++        <button id="mkdir-btn" class="btn btn-secondary btn-sm" type="button">+ 新建目录</button>
++    </div>
++    <div id="folder-grid" class="folder-grid">
++        {% for f in folders %}
++        <div class="folder-card" data-fid="{{ f.id }}">
++            <svg class="folder-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>
++            <a class="folder-open" href="/?folder_id={{ f.id }}">
++                <span class="folder-name">{{ f.name }}</span>
++                <span class="folder-meta">{{ f.folder_count }} 个目录 · {{ f.file_count }} 个文件</span>
++            </a>
++            <div class="folder-actions">
++                <button type="button" class="btn btn-ghost btn-icon btn-sm folder-rename" data-fid="{{ f.id }}" data-name="{{ f.name }}" title="改名"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg></button>
++                <button type="button" class="btn btn-ghost btn-icon btn-sm folder-delete" data-fid="{{ f.id }}" data-name="{{ f.name }}" title="删除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
++            </div>
++        </div>
++        {% endfor %}
++    </div>
++
+     <div class="batchbar hidden" id="batch-actions-bar">
+         <span class="text-sm" style="font-weight:600;"><span id="selection-counter">0</span> 项已选</span>
+         <div class="row">
+             <button id="copy-links-btn" class="btn btn-secondary btn-sm">复制链接</button>
++            <button id="batch-move-btn" class="btn btn-secondary btn-sm">移动</button>
+             <button id="batch-delete-btn" class="btn btn-danger btn-sm">删除</button>
+         </div>
+     </div>
+@@ -60,7 +81,7 @@
+                         <tr class="file-item" id="file-item-{{ f.file_id | replace(from=':', to='-') }}"
+                             data-file-id="{{ f.file_id }}" data-short-id="{{ f.short_id }}"
+                             data-filename="{{ f.filename }}" data-file-url="/d/{{ f.display_id }}"
+-                            data-has-password="{{ f.has_password }}">
++                            data-has-password="{{ f.has_password }}" data-folder-id="{{ f.folder_id }}">
+                             <td><input type="checkbox" class="checkbox file-checkbox" data-file-id="{{ f.file_id }}"></td>
+                             <td>
+                                 <div class="fname">
+@@ -76,6 +97,8 @@
+                                     <a href="/d/{{ f.display_id }}" class="btn btn-ghost btn-icon btn-sm" title="下载"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></a>
+                                     <button type="button" class="btn btn-ghost btn-icon btn-sm copy-link-btn" title="复制链接"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+                                     <button type="button" class="btn btn-ghost btn-icon btn-sm js-lock" title="分享密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></button>
++                                    <button type="button" class="btn btn-ghost btn-icon btn-sm js-move" title="移动到目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 12 12"></path><path d="M14 2h8v8"></path><path d="M20 13v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7"></path></svg></button>
++                                    <button type="button" class="btn btn-ghost btn-icon btn-sm js-rename" title="改名"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg></button>
+                                     <button type="button" class="btn btn-ghost btn-icon btn-sm js-delete" data-file-id="{{ f.file_id }}" title="删除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                 </div>
+                             </td>
+@@ -90,5 +113,6 @@
+     </div>
+     {% endif %}
+ </div>
+-<script src="/static/js/main.js?v=5.5"></script>
++<script>window.__CURRENT_FOLDER__ = "{{ current_folder_id | default(value='') }}";</script>
++<script src="/static/js/main.js?v=5.8"></script>
+ {% endblock %}
+diff --git a/src/constants.rs b/src/constants.rs
+index 0d3b5d9..e90528d 100644
+--- a/src/constants.rs
++++ b/src/constants.rs
+@@ -1,5 +1,17 @@
+-/// Maximum upload body size (512 MB)
+-pub const MAX_UPLOAD_BODY_SIZE: usize = 512 * 1024 * 1024;
++/// Maximum upload body size, in bytes. Default 10 GiB; override at runtime
++/// with env `MAX_UPLOAD_BODY_SIZE_MB` (megabytes, minimum 16). The previous
++/// fixed 512 MiB cap rejected large video uploads during multipart read
++/// (DefaultBodyLimit aborts before the streaming handler runs).
++pub fn max_upload_body_size() -> usize {
++    const DEFAULT_MB: usize = 10 * 1024;
++    std::env::var("MAX_UPLOAD_BODY_SIZE_MB")
++        .ok()
++        .and_then(|v| v.trim().parse::<usize>().ok())
++        .filter(|v| *v >= 16)
++        .unwrap_or(DEFAULT_MB)
++        * 1024
++        * 1024
++}
+ 
+ /// Telegram chunk size for large file uploads (~19.5 MB, under Telegram's 20MB limit)
+ pub const TELEGRAM_CHUNK_SIZE: usize = (19.5 * 1024.0 * 1024.0) as usize;
+@@ -65,5 +77,16 @@ pub const BATCH_DELETE_MAX: usize = 100;
+ pub const MAX_CONCURRENT_CHUNK_UPLOADS: usize = 3;
+ 
+ /// Max attempts for a single Telegram `sendDocument` (initial try + retries),
+-/// used to ride out transient network errors and HTTP 429 rate limiting.
+-pub const TG_UPLOAD_MAX_RETRIES: u32 = 4;
++/// used to ride out transient network errors and HTTP 429 rate limiting
++/// (including the 400-wrapped flood variant; see `retry_after_secs`).
++pub const TG_UPLOAD_MAX_RETRIES: u32 = 8;
++
++/// Process-wide limit on concurrent `sendDocument` calls across ALL upload
++/// requests. Telegram rate-limits a bot's large-file uploads by accumulated
++/// volume; parallel multi-file uploads are the fastest way to hit the flood
++/// control (often returned as a 400-wrapped "too Many Requests"), so the
++/// default serializes uploads globally. Overridable at runtime via
++/// `TG_SEND_GLOBAL_CONCURRENCY`, clamped to 1..=`TG_SEND_GLOBAL_CONCURRENCY_MAX`.
++pub const TG_SEND_GLOBAL_CONCURRENCY_DEFAULT: usize = 1;
++/// Upper bound for the `TG_SEND_GLOBAL_CONCURRENCY` override.
++pub const TG_SEND_GLOBAL_CONCURRENCY_MAX: usize = 4;
+diff --git a/src/database.rs b/src/database.rs
+index 3f232eb..2e185fe 100644
+--- a/src/database.rs
++++ b/src/database.rs
+@@ -72,6 +72,49 @@ pub fn init_db(data_dir: &str) -> DbPool {
+         }
+     }
+ 
++    // Migration: folder tree support. `folders` holds the tree; files reference
++    // it via folder_id (NULL = root). Kept in the same PRAGMA-check style as the
++    // other migrations so existing deployments upgrade in place.
++    conn.execute_batch(
++        "CREATE TABLE IF NOT EXISTS folders (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            name TEXT NOT NULL,
++            parent_id INTEGER,
++            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++        );",
++    )
++    .expect("Failed to create folders table");
++
++    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);")
++        .ok();
++
++    conn.execute_batch(
++        "CREATE TABLE IF NOT EXISTS kv_store (
++            key TEXT PRIMARY KEY,
++            value TEXT NOT NULL,
++            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++        );",
++    )
++    .expect("Failed to create kv_store table");
++
++    let has_folder_id: bool = conn
++        .prepare("PRAGMA table_info(files)")
++        .unwrap()
++        .query_map([], |row| row.get::<_, String>(1))
++        .unwrap()
++        .any(|col| col.map_or(false, |c| c == "folder_id"));
++    if !has_folder_id {
++        tracing::info!("Migrating database: adding files.folder_id column...");
++        if let Err(e) = conn.execute("ALTER TABLE files ADD COLUMN folder_id INTEGER", []) {
++            tracing::error!("Migration warning: Failed to add folder_id column: {}", e);
++        }
++    }
++
++    conn.execute_batch(
++        "CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id);",
++    )
++    .ok();
++
+     conn.execute_batch(
+         "CREATE UNIQUE INDEX IF NOT EXISTS idx_files_short_id ON files(short_id);",
+     )
+@@ -199,6 +242,8 @@ pub struct FileMetadata {
+     pub filesize: i64,
+     pub upload_date: String,
+     pub short_id: Option<String>,
++    /// 所属目录；None = 根目录。
++    pub folder_id: Option<i64>,
+     // 分享密码的 argon2 哈希；绝不序列化给前端（只暴露 has_password 布尔）。
+     #[serde(skip_serializing)]
+     pub share_password: Option<String>,
+@@ -218,7 +263,7 @@ pub fn get_all_files(pool: &DbPool) -> Result<Vec<FileMetadata>, AppErrorKind> {
+     let conn = pool.get()?;
+     let mut stmt = conn
+         .prepare(
+-            "SELECT filename, file_id, filesize, upload_date, short_id, share_password FROM files ORDER BY upload_date DESC",
++            "SELECT filename, file_id, filesize, upload_date, short_id, share_password, folder_id FROM files ORDER BY upload_date DESC",
+         )?;
+ 
+     let files = stmt
+@@ -230,6 +275,7 @@ pub fn get_all_files(pool: &DbPool) -> Result<Vec<FileMetadata>, AppErrorKind> {
+                 upload_date: row.get::<_, String>(3).unwrap_or_default(),
+                 short_id: row.get(4).ok(),
+                 share_password: norm_share_password(row.get(5).ok()),
++                folder_id: row.get(6).ok(),
+             })
+         })?
+         .filter_map(|r| r.ok())
+@@ -241,7 +287,7 @@ pub fn get_all_files(pool: &DbPool) -> Result<Vec<FileMetadata>, AppErrorKind> {
+ pub fn get_file_by_id(pool: &DbPool, identifier: &str) -> Result<Option<FileMetadata>, AppErrorKind> {
+     let conn = pool.get()?;
+     let result = conn.query_row(
+-        "SELECT filename, filesize, upload_date, file_id, short_id, share_password FROM files WHERE short_id = ?1 OR file_id = ?1",
++        "SELECT filename, filesize, upload_date, file_id, short_id, share_password, folder_id FROM files WHERE short_id = ?1 OR file_id = ?1",
+         params![identifier],
+         |row| {
+             Ok(FileMetadata {
+@@ -251,6 +297,7 @@ pub fn get_file_by_id(pool: &DbPool, identifier: &str) -> Result<Option<FileMeta
+                 file_id: row.get(3)?,
+                 short_id: row.get(4).ok(),
+                 share_password: norm_share_password(row.get(5).ok()),
++                folder_id: row.get(6).ok(),
+             })
+         },
+     );
+@@ -349,3 +396,283 @@ pub fn reset_app_settings_in_db(pool: &DbPool) -> Result<(), AppErrorKind> {
+     payload.insert("SESSION_TOKEN".to_string(), None);
+     save_app_settings_to_db(pool, &payload)
+ }
++
++// ------------------------------------------------------------------
++// 文件夹（供 /api/bot/* 管理面使用；面板 UI 仍展示根目录全量清单）
++// ------------------------------------------------------------------
++
++#[derive(Debug, Clone, serde::Serialize)]
++pub struct Folder {
++    pub id: i64,
++    pub name: String,
++    pub parent_id: Option<i64>,
++    pub folder_count: i64,
++    pub file_count: i64,
++}
++
++#[derive(Debug, Clone)]
++pub struct SubtreeFile {
++    pub filename: String,
++    pub file_id: String,
++    pub short_id: Option<String>,
++    pub filesize: i64,
++}
++
++const FOLDER_COLS: &str =
++    "(SELECT COUNT(*) FROM folders c WHERE c.parent_id = f.id) AS folder_count, \
++     (SELECT COUNT(*) FROM files fi WHERE fi.folder_id = f.id) AS file_count";
++
++fn row_to_folder(row: &rusqlite::Row<'_>) -> rusqlite::Result<Folder> {
++    Ok(Folder {
++        id: row.get(0)?,
++        name: row.get(1)?,
++        parent_id: row.get(2).ok(),
++        folder_count: row.get(3).unwrap_or(0),
++        file_count: row.get(4).unwrap_or(0),
++    })
++}
++
++/// 列出某目录的直接子目录（含计数）与文件。parent 传 None 表示根目录。
++pub fn list_folder_children(
++    pool: &DbPool,
++    parent: Option<i64>,
++) -> Result<(Vec<Folder>, Vec<FileMetadata>), AppErrorKind> {
++    let conn = pool.get()?;
++
++    let (where_clause, params_ref): (&str, Vec<Option<i64>>) = if parent.is_some() {
++        ("WHERE f.parent_id = ?1", vec![parent])
++    } else {
++        ("WHERE f.parent_id IS NULL", vec![])
++    };
++
++    let sql = format!(
++        "SELECT f.id, f.name, f.parent_id, {} FROM folders f {} ORDER BY f.name COLLATE NOCASE",
++        FOLDER_COLS, where_clause
++    );
++    let mut stmt = conn.prepare(&sql)?;
++    let folders = stmt
++        .query_map(rusqlite::params_from_iter(params_ref.iter()), row_to_folder)?
++        .filter_map(|r| r.ok())
++        .collect();
++
++    let files = if parent.is_some() {
++        query_folder_files(&conn, "WHERE folder_id = ?1", &[parent])?
++    } else {
++        query_folder_files(&conn, "WHERE folder_id IS NULL", &[])?
++    };
++
++    Ok((folders, files))
++}
++
++fn query_folder_files(
++    conn: &rusqlite::Connection,
++    where_clause: &str,
++    params: &[Option<i64>],
++) -> Result<Vec<FileMetadata>, AppErrorKind> {
++    let sql = format!(
++        "SELECT filename, file_id, filesize, upload_date, short_id, share_password, folder_id FROM files {} \
++         ORDER BY filename COLLATE NOCASE",
++        where_clause
++    );
++    let mut stmt = conn.prepare(&sql)?;
++    let files = stmt
++        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
++            Ok(FileMetadata {
++                filename: row.get(0)?,
++                file_id: row.get(1)?,
++                filesize: row.get(2)?,
++                upload_date: row.get::<_, String>(3).unwrap_or_default(),
++                short_id: row.get(4).ok(),
++                share_password: norm_share_password(row.get(5).ok()),
++                folder_id: row.get(6).ok(),
++            })
++        })?
++        .filter_map(|r| r.ok())
++        .collect();
++    Ok(files)
++}
++
++/// 创建目录；name 由调用方校验（非空、无路径分隔符）。
++pub fn create_folder(
++    pool: &DbPool,
++    name: &str,
++    parent_id: Option<i64>,
++) -> Result<Folder, AppErrorKind> {
++    let conn = pool.get()?;
++    conn.execute(
++        "INSERT INTO folders (name, parent_id) VALUES (?1, ?2)",
++        params![name, parent_id],
++    )?;
++    let id = conn.last_insert_rowid();
++    Ok(Folder {
++        id,
++        name: name.to_string(),
++        parent_id,
++        folder_count: 0,
++        file_count: 0,
++    })
++}
++
++pub fn get_folder(pool: &DbPool, id: i64) -> Result<Option<Folder>, AppErrorKind> {
++    let conn = pool.get()?;
++    let result = conn.query_row(
++        &format!("SELECT f.id, f.name, f.parent_id, {} FROM folders f WHERE f.id = ?1", FOLDER_COLS),
++        params![id],
++        row_to_folder,
++    );
++    match result {
++        Ok(f) => Ok(Some(f)),
++        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
++        Err(e) => Err(e.into()),
++    }
++}
++
++/// 从指定目录沿 parent 链向上收集，返回根 → 当前顺序的面包屑。
++/// 根节点为 { id: None, name: "根目录" }；目录不存在或链断裂时返回仅含根。
++pub fn get_folder_path(pool: &DbPool, folder_id: Option<i64>) -> Vec<Folder> {
++    let root = Folder {
++        id: 0,
++        name: "根目录".to_string(),
++        parent_id: None,
++        folder_count: 0,
++        file_count: 0,
++    };
++    let mut chain: Vec<Folder> = Vec::new();
++    let mut cur = folder_id;
++    let mut guard = 0;
++    while let Some(id) = cur {
++        guard += 1;
++        if guard > 64 {
++            // 防御异常数据成环：直接退回根视图。
++            return vec![root];
++        }
++        match get_folder(pool, id) {
++            Ok(Some(f)) => {
++                cur = f.parent_id;
++                chain.push(f);
++            }
++            _ => return vec![root],
++        }
++    }
++    let mut path = vec![root];
++    path.extend(chain.into_iter().rev());
++    path
++}
++
++/// 目录改名。返回是否命中。
++pub fn rename_folder(pool: &DbPool, id: i64, name: &str) -> Result<bool, AppErrorKind> {
++    let conn = pool.get()?;
++    let rows = conn.execute("UPDATE folders SET name = ?1 WHERE id = ?2", params![name, id])?;
++    Ok(rows > 0)
++}
++
++/// 文件在目录间移动（target 为 None 表示移回根目录）。
++/// identifier 可以是 short_id 或复合 file_id。返回是否命中。
++pub fn set_file_folder(
++    pool: &DbPool,
++    identifier: &str,
++    target: Option<i64>,
++) -> Result<bool, AppErrorKind> {
++    let conn = pool.get()?;
++    let rows = conn.execute(
++        "UPDATE files SET folder_id = ?1 WHERE short_id = ?2 OR file_id = ?2",
++        params![target, identifier],
++    )?;
++    Ok(rows > 0)
++}
++
++/// 文件改名。返回是否命中。
++pub fn rename_file_metadata(
++    pool: &DbPool,
++    identifier: &str,
++    new_name: &str,
++) -> Result<bool, AppErrorKind> {
++    let conn = pool.get()?;
++    let rows = conn.execute(
++        "UPDATE files SET filename = ?1 WHERE short_id = ?2 OR file_id = ?2",
++        params![new_name, identifier],
++    )?;
++    Ok(rows > 0)
++}
++
++/// 递归收集目录子树：全部目录 id（含自身）+ 全部文件的元数据。
++/// 用递归 CTE 一次查询，避免逐层往返。
++pub fn collect_subtree(
++    pool: &DbPool,
++    root_id: i64,
++) -> Result<(Vec<i64>, Vec<SubtreeFile>), AppErrorKind> {
++    let conn = pool.get()?;
++    let cte = "WITH RECURSIVE sub(id) AS ( \
++               SELECT ?1 UNION ALL \
++               SELECT f.id FROM folders f JOIN sub s ON f.parent_id = s.id) ";
++
++    let sql = format!("{} SELECT id FROM sub", cte);
++    let mut stmt = conn.prepare(&sql)?;
++    let folder_ids: Vec<i64> = stmt
++        .query_map(params![root_id], |row| row.get(0))?
++        .filter_map(|r| r.ok())
++        .collect();
++
++    let sql = format!(
++        "{} SELECT fi.filename, fi.file_id, fi.short_id, fi.filesize \
++         FROM files fi JOIN sub ON fi.folder_id = sub.id",
++        cte
++    );
++    let mut stmt = conn.prepare(&sql)?;
++    let files: Vec<SubtreeFile> = stmt
++        .query_map(params![root_id], |row| {
++            Ok(SubtreeFile {
++                filename: row.get(0)?,
++                file_id: row.get(1)?,
++                short_id: row.get(2).ok(),
++                filesize: row.get(3)?,
++            })
++        })?
++        .filter_map(|r| r.ok())
++        .collect();
++
++    Ok((folder_ids, files))
++}
++
++/// 按 id 批量删除目录行。返回删除的行数。
++pub fn delete_folders_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize, AppErrorKind> {
++    let conn = pool.get()?;
++    let mut deleted = 0;
++    for id in ids {
++        deleted += conn.execute("DELETE FROM folders WHERE id = ?1", params![id])?;
++    }
++    Ok(deleted)
++}
++
++// ------------------------------------------------------------------
++// 通用 KV 存储（kv_store 表）：目前存放夸克直链 Cookie 等运行期凭据
++// ------------------------------------------------------------------
++
++/// 读 KV；键不存在返回 None。
++pub fn kv_get(pool: &DbPool, key: &str) -> Result<Option<String>, AppErrorKind> {
++    let conn = pool.get()?;
++    let result: Result<String, rusqlite::Error> =
++        conn.query_row("SELECT value FROM kv_store WHERE key = ?1", params![key], |row| {
++            row.get(0)
++        });
++    match result {
++        Ok(v) => Ok(Some(v)),
++        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
++        Err(e) => Err(e.into()),
++    }
++}
++
++/// 写 KV（UPSERT）；空值写入等于删除。
++pub fn kv_set(pool: &DbPool, key: &str, value: &str) -> Result<(), AppErrorKind> {
++    let conn = pool.get()?;
++    if value.is_empty() {
++        conn.execute("DELETE FROM kv_store WHERE key = ?1", params![key])?;
++        return Ok(());
++    }
++    conn.execute(
++        "INSERT INTO kv_store (key, value) VALUES (?1, ?2)
++         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = CURRENT_TIMESTAMP",
++        params![key, value],
++    )?;
++    Ok(())
++}
+diff --git a/src/main.rs b/src/main.rs
+index dfd46da..d30bb09 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -91,11 +91,14 @@ async fn main() {
+         }
+     });
+ 
++    let max_body = constants::max_upload_body_size();
++    tracing::info!("上传体积上限: {} MiB", max_body / 1024 / 1024);
++
+     // Build router
+     let app = Router::new()
+         .merge(routes::build_router(state.clone()))
+         .nest_service("/static", ServeDir::new("app/static"))
+-        .layer(DefaultBodyLimit::max(constants::MAX_UPLOAD_BODY_SIZE)) // 512MB
++        .layer(DefaultBodyLimit::max(max_body))
+         .layer(axum::middleware::from_fn_with_state(
+             state.clone(),
+             middleware::auth::auth_middleware,
+diff --git a/src/middleware/auth.rs b/src/middleware/auth.rs
+index b37fc94..bf32e6e 100644
+--- a/src/middleware/auth.rs
++++ b/src/middleware/auth.rs
+@@ -194,7 +194,9 @@ pub async fn auth_middleware(
+     }
+ 
+     // Always-allowed API paths (regardless of password state)
+-    let always_public = ["/api/health"];
++    // /api/bot/ has its own X-Bot-Key auth in api_bot.rs (fail closed when
++    // BOT_API_KEY is unset), so it must bypass the session-cookie gate.
++    let always_public = ["/api/health", "/api/bot/"];
+     if path_is_allowed(&path, &always_public) {
+         return next.run(req).await;
+     }
+diff --git a/src/routes/api_bot.rs b/src/routes/api_bot.rs
+new file mode 100644
+index 0000000..e74c6e7
+--- /dev/null
++++ b/src/routes/api_bot.rs
+@@ -0,0 +1,813 @@
++//! Bot 管理面（/api/bot/*）。
++//!
++//! 供 bot-worker 通过 X-Bot-Key 调用，实现 Telegram 侧的目录管理命令
++//! （/ls /mkdir /mv /rename /rm /rmdir）。与面板 UI 的会话鉴权互相独立：
++//! - BOT_API_KEY 未配置 → 整面 503（fail closed）；
++//! - X-Bot-Key 不匹配 → 401；
++//! - 全局 auth 中间件把 /api/bot/ 前缀放行，由本模块自行鉴权。
++
++use std::sync::Arc;
++
++use axum::body::Body;
++use axum::extract::{Path, Query, State};
++use axum::http::{Request, StatusCode};
++use axum::middleware::{self, Next};
++use axum::response::{IntoResponse, Response};
++use axum::routing::{delete, get, patch, post};
++use axum::{Json, Router};
++use serde::Deserialize;
++use serde_json::json;
++
++use crate::auth;
++use crate::database;
++use crate::error::http_error;
++use crate::events::build_file_event;
++use crate::state::AppState;
++use crate::telegram::service::{DeleteResult, TelegramService};
++
++// ------------------------------------------------------------------
++// 鉴权
++// ------------------------------------------------------------------
++
++fn bot_api_key() -> Option<String> {
++    std::env::var("BOT_API_KEY")
++        .ok()
++        .map(|s| s.trim().to_string())
++        .filter(|s| !s.is_empty())
++}
++
++pub async fn require_bot_key(req: Request<Body>, next: Next) -> Response {
++    let Some(expected) = bot_api_key() else {
++        return (
++            StatusCode::SERVICE_UNAVAILABLE,
++            Json(json!({
++                "status": "error",
++                "code": "bot_api_disabled",
++                "message": "BOT_API_KEY 未配置，bot 管理面已禁用"
++            })),
++        )
++            .into_response();
++    };
++
++    let provided = req
++        .headers()
++        .get("x-bot-key")
++        .and_then(|v| v.to_str().ok())
++        .unwrap_or("")
++        .trim()
++        .to_string();
++
++    if provided.is_empty() || !auth::secure_compare(&provided, &expected) {
++        return (
++            StatusCode::UNAUTHORIZED,
++            Json(json!({
++                "status": "error",
++                "code": "unauthorized",
++                "message": "X-Bot-Key 校验失败"
++            })),
++        )
++            .into_response();
++    }
++
++    next.run(req).await
++}
++
++// ------------------------------------------------------------------
++// 请求体
++// ------------------------------------------------------------------
++
++#[derive(Deserialize)]
++struct ListQuery {
++    parent_id: Option<i64>,
++}
++
++#[derive(Deserialize)]
++struct CreateFolderBody {
++    name: String,
++    parent_id: Option<i64>,
++}
++
++#[derive(Deserialize)]
++struct MoveBody {
++    target_folder_id: Option<i64>,
++    /// 面板用：按路径移动（"/"=根，"/影视/2026"），服务端逐段解析。
++    #[serde(default)]
++    target_path: Option<String>,
++}
++
++#[derive(Deserialize)]
++struct RenameBody {
++    filename: String,
++}
++
++// ------------------------------------------------------------------
++// 校验
++// ------------------------------------------------------------------
++
++const NAME_MAX_LEN: usize = 255;
++
++/// 目录名 / 文件名公共校验：去除首尾空白后非空，且不允许路径分隔符。
++fn validate_name(raw: &str) -> Result<String, Response> {
++    let name = raw.trim();
++    if name.is_empty() {
++        return Err((
++            StatusCode::BAD_REQUEST,
++            Json(json!({
++                "status": "error",
++                "code": "invalid_name",
++                "message": "名称不能为空"
++            })),
++        )
++            .into_response());
++    }
++    if name.contains('/') || name.contains('\\') {
++        return Err((
++            StatusCode::BAD_REQUEST,
++            Json(json!({
++                "status": "error",
++                "code": "invalid_name",
++                "message": "名称不能包含 / 或 \\"
++            })),
++        )
++            .into_response());
++    }
++    if name.chars().count() > NAME_MAX_LEN {
++        return Err((
++            StatusCode::BAD_REQUEST,
++            Json(json!({
++                "status": "error",
++                "code": "invalid_name",
++                "message": format!("名称不能超过 {} 个字符", NAME_MAX_LEN)
++            })),
++        )
++            .into_response());
++    }
++    Ok(name.to_string())
++}
++
++// ------------------------------------------------------------------
++// Telegram 服务（与 api_files 相同的构造逻辑）
++// ------------------------------------------------------------------
++
++fn get_telegram_service(state: &AppState) -> Result<TelegramService, Response> {
++    let app_settings = crate::config::get_app_settings(&state.settings, &state.db_pool);
++    let token = app_settings
++        .get("BOT_TOKEN")
++        .and_then(|v| v.as_deref())
++        .unwrap_or("")
++        .to_string();
++    let channel = app_settings
++        .get("CHANNEL_NAME")
++        .and_then(|v| v.as_deref())
++        .unwrap_or("")
++        .to_string();
++
++    if token.is_empty() || channel.is_empty() {
++        return Err(http_error(
++            StatusCode::SERVICE_UNAVAILABLE,
++            "Bot 未配置",
++            "bot_not_configured",
++        )
++        .into_response());
++    }
++
++    Ok(TelegramService::new(
++        token,
++        channel,
++        state.http_client.clone(),
++    ))
++}
++
++fn broadcast_delete(state: &AppState, file_id: &str) {
++    let ev = build_file_event("delete", file_id, None, None, None, None);
++    state.event_bus.publish(serde_json::to_string(&ev).unwrap_or_default());
++}
++
++// ------------------------------------------------------------------
++// Handlers
++// ------------------------------------------------------------------
++
++async fn list_folder(
++    State(state): State<Arc<AppState>>,
++    Query(q): Query<ListQuery>,
++) -> Response {
++    match database::list_folder_children(&state.db_pool, q.parent_id) {
++        Ok((folders, files)) => Json(json!({ "folders": folders, "files": files })).into_response(),
++        Err(e) => {
++            tracing::error!("bot 列目录失败: {}", e);
++            http_error(
++                StatusCode::INTERNAL_SERVER_ERROR,
++                "查询目录失败",
++                "db_error",
++            )
++            .into_response()
++        }
++    }
++}
++
++async fn create_folder(
++    State(state): State<Arc<AppState>>,
++    Json(body): Json<CreateFolderBody>,
++) -> Response {
++    let name = match validate_name(&body.name) {
++        Ok(n) => n,
++        Err(resp) => return resp,
++    };
++
++    if let Some(pid) = body.parent_id {
++        match database::get_folder(&state.db_pool, pid) {
++            Ok(Some(_)) => {}
++            Ok(None) => {
++                return http_error(
++                    StatusCode::NOT_FOUND,
++                    "父目录不存在",
++                    "folder_not_found",
++                )
++                .into_response()
++            }
++            Err(e) => {
++                tracing::error!("bot 查询父目录失败: {}", e);
++                return http_error(
++                    StatusCode::INTERNAL_SERVER_ERROR,
++                    "查询父目录失败",
++                    "db_error",
++                )
++                .into_response();
++            }
++        }
++    }
++
++    match database::create_folder(&state.db_pool, &name, body.parent_id) {
++        Ok(f) => Json(json!({
++            "status": "ok",
++            "id": f.id,
++            "name": f.name,
++            "parent_id": f.parent_id,
++        }))
++        .into_response(),
++        Err(e) => {
++            tracing::error!("bot 创建目录失败: {}", e);
++            http_error(
++                StatusCode::INTERNAL_SERVER_ERROR,
++                "创建目录失败",
++                "db_error",
++            )
++            .into_response()
++        }
++    }
++}
++
++async fn rename_folder(
++    State(state): State<Arc<AppState>>,
++    Path(id): Path<i64>,
++    Json(body): Json<CreateFolderBody>,
++) -> Response {
++    let name = match validate_name(&body.name) {
++        Ok(n) => n,
++        Err(resp) => return resp,
++    };
++    match database::get_folder(&state.db_pool, id) {
++        Ok(Some(_)) => {}
++        Ok(None) => {
++            return http_error(StatusCode::NOT_FOUND, "目录不存在", "folder_not_found")
++                .into_response()
++        }
++        Err(e) => {
++            tracing::error!("bot 查询目录失败: {}", e);
++            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "查询目录失败", "db_error")
++                .into_response();
++        }
++    }
++    match database::rename_folder(&state.db_pool, id, &name) {
++        Ok(_) => Json(json!({ "status": "ok", "id": id, "name": name })).into_response(),
++        Err(e) => {
++            tracing::error!("bot 目录改名失败: {}", e);
++            http_error(StatusCode::INTERNAL_SERVER_ERROR, "目录改名失败", "db_error")
++                .into_response()
++        }
++    }
++}
++
++/// 级联删除目录：递归 CTE 收集子树 → 逐文件走与面板删除相同的
++/// 「TG 删主消息 + 分块 → DB 删行」流程 → 删除全部目录行。
++/// 主消息删除失败的文件移回根目录并列入 failed_files，便于稍后重试。
++async fn delete_folder_cascade(
++    State(state): State<Arc<AppState>>,
++    Path(id): Path<i64>,
++) -> Response {
++    let tg = match get_telegram_service(&state) {
++        Ok(t) => t,
++        Err(resp) => return resp,
++    };
++
++    match database::get_folder(&state.db_pool, id) {
++        Ok(Some(_)) => {}
++        Ok(None) => {
++            return http_error(StatusCode::NOT_FOUND, "目录不存在", "folder_not_found")
++                .into_response()
++        }
++        Err(e) => {
++            tracing::error!("bot 查询目录失败: {}", e);
++            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "查询目录失败", "db_error")
++                .into_response();
++        }
++    }
++
++    let (folder_ids, files) = match database::collect_subtree(&state.db_pool, id) {
++        Ok(x) => x,
++        Err(e) => {
++            tracing::error!("bot 收集目录子树失败: {}", e);
++            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "查询目录失败", "db_error")
++                .into_response();
++        }
++    };
++
++    let mut files_deleted: u64 = 0;
++    let mut bytes_freed: i64 = 0;
++    let mut failed_files: Vec<serde_json::Value> = Vec::new();
++    let mut failed_chunks: Vec<String> = Vec::new();
++
++    for f in &files {
++        let result = match tokio::time::timeout(
++            std::time::Duration::from_secs(30),
++            tg.delete_file_with_chunks(&f.file_id),
++        )
++        .await
++        {
++            Ok(r) => r,
++            Err(_) => DeleteResult {
++                status: "timeout".into(),
++                main_file_id: f.file_id.clone(),
++                deleted_chunks: vec![],
++                failed_chunks: vec![],
++                orphaned_chunks: vec![],
++                main_orphaned: false,
++                main_message_deleted: false,
++                main_delete_reason: "timeout".into(),
++                is_manifest: false,
++                reason: "telegram delete timeout".into(),
++            },
++        };
++
++        if result.main_clear() {
++            if database::delete_file_metadata(&state.db_pool, &f.file_id).unwrap_or(false) {
++                files_deleted += 1;
++                bytes_freed += f.filesize;
++                broadcast_delete(&state, &f.file_id);
++            }
++            failed_chunks.extend(result.failed_chunks.iter().cloned());
++        } else {
++            // 保底：文件行保留，移回根目录，避免留下指向已不存在目录的行。
++            let _ = database::set_file_folder(&state.db_pool, &f.file_id, None);
++            failed_files.push(json!({
++                "short_id": f.short_id,
++                "filename": f.filename,
++                "reason": result.reason,
++            }));
++        }
++    }
++
++    match database::delete_folders_by_ids(&state.db_pool, &folder_ids) {
++        Ok(_) => {}
++        Err(e) => {
++            tracing::error!("bot 删除目录行失败: {}", e);
++            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "删除目录失败", "db_error")
++                .into_response();
++        }
++    }
++
++    tracing::info!(
++        "bot 级联删除目录 id={}: 目录 {} 个，文件 {} 个，释放 {} 字节",
++        id,
++        folder_ids.len(),
++        files_deleted,
++        bytes_freed
++    );
++
++    Json(json!({
++        "status": "ok",
++        "folders_deleted": folder_ids.len(),
++        "files_deleted": files_deleted,
++        "bytes_freed": bytes_freed,
++        "failed_files": failed_files,
++        "failed_chunks": failed_chunks,
++    }))
++    .into_response()
++}
++
++async fn move_file(
++    State(state): State<Arc<AppState>>,
++    Path(file_id): Path<String>,
++    Json(body): Json<MoveBody>,
++) -> Response {
++    let mut target_folder_id = body.target_folder_id;
++    if target_folder_id.is_none() {
++        if let Some(raw_path) = body.target_path.as_deref() {
++            match resolve_folder_path(&state, raw_path).await {
++                Ok(pid) => target_folder_id = pid,
++                Err(resp) => return resp,
++            }
++        }
++    }
++
++    if let Some(pid) = target_folder_id {
++        match database::get_folder(&state.db_pool, pid) {
++            Ok(Some(_)) => {}
++            Ok(None) => {
++                return http_error(
++                    StatusCode::NOT_FOUND,
++                    "目标目录不存在",
++                    "target_folder_not_found",
++                )
++                .into_response()
++            }
++            Err(e) => {
++                tracing::error!("bot 查询目标目录失败: {}", e);
++                return http_error(
++                    StatusCode::INTERNAL_SERVER_ERROR,
++                    "查询目标目录失败",
++                    "db_error",
++                )
++                .into_response();
++            }
++        }
++    }
++
++    let meta = match database::get_file_by_id(&state.db_pool, &file_id) {
++        Ok(Some(m)) => m,
++        Ok(None) => {
++            return http_error(StatusCode::NOT_FOUND, "文件不存在", "file_not_found")
++                .into_response()
++        }
++        Err(e) => {
++            tracing::error!("bot 查询文件失败: {}", e);
++            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "查询文件失败", "db_error")
++                .into_response();
++        }
++    };
++
++    match database::set_file_folder(&state.db_pool, &file_id, target_folder_id) {
++        Ok(true) => Json(json!({
++            "status": "ok",
++            "short_id": meta.short_id,
++            "filename": meta.filename,
++            "folder_id": target_folder_id,
++        }))
++        .into_response(),
++        Ok(false) => {
++            http_error(StatusCode::NOT_FOUND, "文件不存在", "file_not_found").into_response()
++        }
++        Err(e) => {
++            tracing::error!("bot 移动文件失败: {}", e);
++            http_error(StatusCode::INTERNAL_SERVER_ERROR, "移动文件失败", "db_error")
++                .into_response()
++        }
++    }
++}
++
++async fn rename_file(
++    State(state): State<Arc<AppState>>,
++    Path(file_id): Path<String>,
++    Json(body): Json<RenameBody>,
++) -> Response {
++    let new_name = match validate_name(&body.filename) {
++        Ok(n) => n,
++        Err(resp) => return resp,
++    };
++
++    match database::rename_file_metadata(&state.db_pool, &file_id, &new_name) {
++        Ok(true) => {
++            let short_id = database::get_file_by_id(&state.db_pool, &file_id)
++                .ok()
++                .flatten()
++                .and_then(|m| m.short_id);
++            Json(json!({
++                "status": "ok",
++                "filename": new_name,
++                "short_id": short_id,
++            }))
++            .into_response()
++        }
++        Ok(false) => {
++            http_error(StatusCode::NOT_FOUND, "文件不存在", "file_not_found").into_response()
++        }
++        Err(e) => {
++            tracing::error!("bot 文件改名失败: {}", e);
++            http_error(StatusCode::INTERNAL_SERVER_ERROR, "文件改名失败", "db_error")
++                .into_response()
++        }
++    }
++}
++
++/// P2 手动逃生口查询参数：force_db=1 时跳过 Telegram 删除。
++#[derive(Debug, Default, Deserialize)]
++struct DeleteFileQuery {
++    force_db: Option<String>,
++}
++
++/// 解析 force_db 布尔值（1/true/yes/on，大小写不敏感）。
++fn is_force_db(raw: &Option<String>) -> bool {
++    match raw.as_deref().map(|v| v.trim().to_ascii_lowercase()) {
++        Some(v) => matches!(v.as_str(), "1" | "true" | "yes" | "on"),
++        None => false,
++    }
++}
++
++/// 与面板 DELETE /api/files/:file_id 相同的删除流程（主消息 + 分块 + DB 行）。
++async fn delete_file_bot(
++    State(state): State<Arc<AppState>>,
++    Path(file_id): Path<String>,
++    Query(q): Query<DeleteFileQuery>,
++) -> Response {
++    // P2：手动逃生口 —— force_db 时完全不调用 Telegram，只删数据库行。
++    // 用途：频道消息超 48 小时永久不可删、或 TG 侧故障时，人工清理面板记录。
++    if is_force_db(&q.force_db) {
++        tracing::warn!(
++            "[bot-delete] force_db 生效，跳过 Telegram 删除 file_id={}",
++            file_id
++        );
++        let db_deleted = database::delete_file_metadata(&state.db_pool, &file_id).unwrap_or(false);
++        if db_deleted {
++            broadcast_delete(&state, &file_id);
++        }
++        tracing::warn!(
++            "[bot-delete] force_db 完成 file_id={} db_deleted={}",
++            file_id,
++            db_deleted
++        );
++        return Json(json!({
++            "status": "ok",
++            "message": format!(
++                "文件 {} 已从数据库删除（force_db：未调用 Telegram，频道侧消息可能残留）",
++                file_id
++            ),
++            "force_db": true,
++            "tg_orphaned": true,
++            "details": {
++                "db": if db_deleted { "deleted" } else { "not_found_in_db" },
++            }
++        }))
++        .into_response();
++    }
++
++    let tg = match get_telegram_service(&state) {
++        Ok(t) => t,
++        Err(resp) => return resp,
++    };
++
++    let tg_id = match database::get_file_by_id(&state.db_pool, &file_id) {
++        Ok(Some(f)) => f.file_id.clone(),
++        Ok(None) => file_id.clone(),
++        Err(e) => {
++            tracing::error!("删除前查询文件失败: {}", e);
++            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "查询文件失败", "db_error")
++                .into_response();
++        }
++    };
++
++    tracing::info!(
++        "[bot-delete] 收到删除请求 file_id={} -> tg_id={}",
++        file_id,
++        tg_id
++    );
++
++    let result = match tokio::time::timeout(
++        std::time::Duration::from_secs(30),
++        tg.delete_file_with_chunks(&tg_id),
++    )
++    .await
++    {
++        Ok(r) => r,
++        Err(_) => DeleteResult {
++            status: "timeout".into(),
++            main_file_id: tg_id.clone(),
++            deleted_chunks: vec![],
++            failed_chunks: vec![],
++            orphaned_chunks: vec![],
++            main_orphaned: false,
++            main_message_deleted: false,
++            main_delete_reason: "timeout".into(),
++            is_manifest: false,
++            reason: "telegram delete timeout".into(),
++        },
++    };
++
++    tracing::info!(
++        "[bot-delete] 结果 file_id={} status={} main_ok={} main_reason={} manifest={} deleted={} failed={} orphaned={} reason={}",
++        file_id,
++        result.status,
++        result.main_message_deleted,
++        result.main_delete_reason,
++        result.is_manifest,
++        result.deleted_chunks.len(),
++        result.failed_chunks.len(),
++        result.orphaned_count(),
++        result.reason
++    );
++
++    let db_deleted = if result.main_clear() {
++        database::delete_file_metadata(&state.db_pool, &file_id).unwrap_or(false)
++    } else {
++        false
++    };
++    if db_deleted {
++        broadcast_delete(&state, &file_id);
++    }
++
++    if result.main_clear() {
++        let db_status = if db_deleted { "deleted" } else { "not_found_in_db" };
++        if result.failed_chunks.is_empty() {
++            // P1：terminal_orphan 不算失败，但要在响应里明确告知残留条数。
++            let orphaned = result.orphaned_count();
++            let msg = if orphaned == 0 {
++                format!("文件 {} 已删除。", file_id)
++            } else {
++                format!(
++                    "文件 {} 已删除；{} 条频道消息超 48 小时无法删除，已残留",
++                    file_id, orphaned
++                )
++            };
++            return Json(json!({
++                "status": "ok",
++                "message": msg,
++                "tg_orphaned": orphaned > 0,
++                "orphaned_count": orphaned,
++                "details": { "db": db_status, "tg": result }
++            }))
++            .into_response();
++        }
++        return (
++            StatusCode::INTERNAL_SERVER_ERROR,
++            Json(json!({
++                "status": "error",
++                "code": "partial_failure",
++                "message": "主文件已删，但部分分块删除失败",
++                "details": { "db": db_status, "tg": result }
++            })),
++        )
++            .into_response();
++    }
++
++    (
++        StatusCode::BAD_GATEWAY,
++        Json(json!({
++            "status": "error",
++            "code": "delete_failed",
++            "message": format!("Telegram 删除失败：{}", result.reason),
++            "details": { "tg": result }
++        })),
++    )
++        .into_response()
++}
++
++/// 按 "/" 分段逐层解析目录路径，返回目标目录 id（根目录为 None）。
++/// 支持 "." 与 ".." 段；任一层目录不存在即报 404。
++async fn resolve_folder_path(state: &Arc<AppState>, raw: &str) -> Result<Option<i64>, Response> {
++    let mut cur: Option<i64> = None;
++    for seg in raw.split('/') {
++        let seg = seg.trim();
++        if seg.is_empty() || seg == "." {
++            continue;
++        }
++        if seg == ".." {
++            cur = match cur {
++                None => {
++                    return Err(
++                        http_error(StatusCode::BAD_REQUEST, "路径已到根目录之上", "bad_path")
++                            .into_response(),
++                    )
++                }
++                Some(id) => match database::get_folder(&state.db_pool, id) {
++                    Ok(Some(f)) => f.parent_id,
++                    Ok(None) => {
++                        return Err(http_error(
++                            StatusCode::NOT_FOUND,
++                            "目录不存在",
++                            "folder_not_found",
++                        )
++                        .into_response())
++                    }
++                    Err(e) => {
++                        tracing::error!("解析目录路径失败: {}", e);
++                        return Err(http_error(
++                            StatusCode::INTERNAL_SERVER_ERROR,
++                            "查询目录失败",
++                            "db_error",
++                        )
++                        .into_response());
++                    }
++                },
++            };
++            continue;
++        }
++        let (folders, _) = database::list_folder_children(&state.db_pool, cur).map_err(|e| {
++            tracing::error!("解析目录路径失败: {}", e);
++            http_error(StatusCode::INTERNAL_SERVER_ERROR, "查询目录失败", "db_error")
++                .into_response()
++        })?;
++        match folders.iter().find(|f| f.name == seg) {
++            Some(f) => cur = Some(f.id),
++            None => {
++                tracing::warn!("移动目标目录不存在: {}", seg);
++                return Err(http_error(
++                    StatusCode::NOT_FOUND,
++                    "目录不存在",
++                    "folder_not_found",
++                )
++                .into_response())
++            }
++        }
++    }
++    Ok(cur)
++}
++
++// ------------------------------------------------------------------
++// 运行期凭据（夸克直链 Cookie）：bot /setcookie 写入，workflow 取用
++// ------------------------------------------------------------------
++
++#[derive(Deserialize)]
++struct QuarkCookieBody {
++    cookie: String,
++}
++
++const KV_QUARK_COOKIE: &str = "quark_cookie";
++const QUARK_COOKIE_MAX_LEN: usize = 8192;
++
++async fn get_quark_cookie(State(state): State<Arc<AppState>>) -> Response {
++    match database::kv_get(&state.db_pool, KV_QUARK_COOKIE) {
++        Ok(v) => Json(json!({ "cookie": v })).into_response(),
++        Err(e) => {
++            tracing::error!("bot 读取 Cookie 失败: {}", e);
++            http_error(StatusCode::INTERNAL_SERVER_ERROR, "读取失败", "db_error")
++                .into_response()
++        }
++    }
++}
++
++async fn set_quark_cookie(
++    State(state): State<Arc<AppState>>,
++    Json(body): Json<QuarkCookieBody>,
++) -> Response {
++    let cookie = body.cookie.trim().to_string();
++    if cookie.len() > QUARK_COOKIE_MAX_LEN {
++        return http_error(
++            StatusCode::BAD_REQUEST,
++            "Cookie 过长",
++            "cookie_too_long",
++        )
++        .into_response();
++    }
++    // 空值 = 清除；其余原样存（cookie 格式由上游保证，服务端不强校验）
++    match database::kv_set(&state.db_pool, KV_QUARK_COOKIE, &cookie) {
++        Ok(()) => {
++            let action = if cookie.is_empty() { "已清除" } else { "已更新" };
++            tracing::info!("bot 面 Quark Cookie {}", action);
++            Json(json!({
++                "status": "ok",
++                "message": format!("Cookie {}", action),
++                "cleared": cookie.is_empty(),
++            }))
++            .into_response()
++        }
++        Err(e) => {
++            tracing::error!("bot 写入 Cookie 失败: {}", e);
++            http_error(StatusCode::INTERNAL_SERVER_ERROR, "写入失败", "db_error")
++                .into_response()
++        }
++    }
++}
++
++// ------------------------------------------------------------------
++// 路由
++// ------------------------------------------------------------------
++
++pub fn router() -> Router<Arc<AppState>> {
++    Router::new()
++        .route(
++            "/api/bot/folders",
++            get(list_folder).post(create_folder),
++        )
++        .route("/api/bot/folders/:id", delete(delete_folder_cascade))
++        .route("/api/bot/folders/:id/rename", post(rename_folder))
++        .route("/api/bot/files/:file_id/move", post(move_file))
++        .route("/api/bot/quark-cookie", get(get_quark_cookie).post(set_quark_cookie))
++        .route(
++            "/api/bot/files/:file_id",
++            patch(rename_file).delete(delete_file_bot),
++        )
++        .layer(middleware::from_fn(require_bot_key))
++}
++
++/// 面板 UI 用的目录/文件管理路由（与 bot 共用同一批 handler）。
++/// 不带 X-Bot-Key 层：走全局会话鉴权（未登录返回 401）。
++pub fn panel_router() -> Router<Arc<AppState>> {
++    Router::new()
++        .route(
++            "/api/folders",
++            get(list_folder).post(create_folder),
++        )
++        .route("/api/folders/:id", delete(delete_folder_cascade))
++        .route("/api/folders/:id/rename", post(rename_folder))
++        .route("/api/files/:file_id/move", post(move_file))
++        .route("/api/files/:file_id/rename", patch(rename_file))
++}
+diff --git a/src/routes/api_files.rs b/src/routes/api_files.rs
+index 6a3da99..9e3c52e 100644
+--- a/src/routes/api_files.rs
++++ b/src/routes/api_files.rs
+@@ -800,6 +800,8 @@ async fn delete_file(
+             main_file_id: tg_id.clone(),
+             deleted_chunks: vec![],
+             failed_chunks: vec![],
++            orphaned_chunks: vec![],
++            main_orphaned: false,
+             main_message_deleted: false,
+             main_delete_reason: "timeout".into(),
+             is_manifest: false,
+@@ -810,7 +812,7 @@ async fn delete_file(
+     // Only drop the DB row after TG main message is gone (or already absent).
+     // Keeps panel/channel consistent: failed TG delete leaves the row so the
+     // user can retry instead of creating silent channel orphans.
+-    let db_deleted = if result.main_message_deleted {
++    let db_deleted = if result.main_clear() {
+         database::delete_file_metadata(&state.db_pool, &db_id).unwrap_or(false)
+     } else {
+         false
+@@ -822,7 +824,7 @@ async fn delete_file(
+         }
+     }
+ 
+-    if result.main_message_deleted {
++    if result.main_clear() {
+         let db_status = if db_deleted {
+             "deleted"
+         } else {
+@@ -830,9 +832,21 @@ async fn delete_file(
+         };
+ 
+         if result.failed_chunks.is_empty() {
++            // P1：terminal_orphan 不算失败，但要在响应里明确告知残留条数。
++            let orphaned = result.orphaned_count();
++            let msg = if orphaned == 0 {
++                format!("文件 {} 已删除。", file_id)
++            } else {
++                format!(
++                    "文件 {} 已删除；{} 条频道消息超 48 小时无法删除，已残留",
++                    file_id, orphaned
++                )
++            };
+             return Json(serde_json::json!({
+                 "status": "ok",
+-                "message": format!("文件 {} 已删除。", file_id),
++                "message": msg,
++                "tg_orphaned": orphaned > 0,
++                "orphaned_count": orphaned,
+                 "details": {
+                     "db": db_status,
+                     "tg": result,
+@@ -897,7 +911,7 @@ async fn batch_delete_files(
+                     _ => (fid.clone(), fid.clone()),
+                 };
+                 let result = tg.delete_file_with_chunks(&tg_id).await;
+-                let db_deleted = if result.main_message_deleted {
++                let db_deleted = if result.main_clear() {
+                     database::delete_file_metadata(&state.db_pool, &db_id).unwrap_or(false)
+                 } else {
+                     false
+diff --git a/src/routes/mod.rs b/src/routes/mod.rs
+index 99007b8..a760544 100644
+--- a/src/routes/mod.rs
++++ b/src/routes/mod.rs
+@@ -1,4 +1,5 @@
+ pub mod api_auth;
++pub mod api_bot;
+ pub mod api_files;
+ pub mod api_settings;
+ pub mod api_sse;
+@@ -16,6 +17,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
+         .merge(pages::router())
+         .merge(api_auth::router())
+         .merge(api_files::router())
++        .merge(api_bot::router())
++        .merge(api_bot::panel_router())
+         .merge(api_upload::router())
+         .merge(api_settings::router())
+         .merge(api_sse::router())
+diff --git a/src/routes/pages.rs b/src/routes/pages.rs
+index 732ad06..f125b0e 100644
+--- a/src/routes/pages.rs
++++ b/src/routes/pages.rs
+@@ -1,6 +1,6 @@
+ use std::sync::Arc;
+ 
+-use axum::extract::{Path, State};
++use axum::extract::{Path, Query, State};
+ use axum::http::{HeaderMap, StatusCode};
+ use axum::response::{Html, IntoResponse, Response};
+ use axum::routing::{get, post};
+@@ -12,6 +12,11 @@ use crate::database;
+ use crate::error::http_error;
+ use crate::state::AppState;
+ 
++#[derive(Deserialize)]
++struct IndexQuery {
++    folder_id: Option<i64>,
++}
++
+ fn page_cfg(state: &AppState) -> serde_json::Value {
+     let app_settings = config::get_app_settings(&state.settings, &state.db_pool);
+     let bot_token = app_settings
+@@ -68,6 +73,7 @@ fn enrich_files(files: &[database::FileMetadata]) -> Vec<serde_json::Value> {
+                 "upload_date_short": upload_date_short,
+                 "display_id": display_id,
+                 "has_password": f.has_share_password(),
++                "folder_id": f.folder_id,
+             })
+         })
+         .collect()
+@@ -92,14 +98,34 @@ async fn welcome(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+     render(&state, "welcome.html", &ctx)
+ }
+ 
+-async fn index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
++async fn index(
++    State(state): State<Arc<AppState>>,
++    Query(q): Query<IndexQuery>,
++) -> impl IntoResponse {
+     let cfg = page_cfg(&state);
+-    let files = database::get_all_files(&state.db_pool).unwrap_or_default();
++
++    // 目录视图：缺省（或目录不存在）回落根目录。
++    let current_folder_id = match q.folder_id {
++        Some(id) => match database::get_folder(&state.db_pool, id) {
++            Ok(Some(_)) => Some(id),
++            _ => None,
++        },
++        None => None,
++    };
++    let (folders, files) =
++        database::list_folder_children(&state.db_pool, current_folder_id).unwrap_or_default();
++    let trail = database::get_folder_path(&state.db_pool, current_folder_id);
+     let enriched = enrich_files(&files);
+ 
+     let mut ctx = tera::Context::new();
+     ctx.insert("cfg", &cfg);
+     ctx.insert("files", &enriched);
++    ctx.insert("folders", &folders);
++    ctx.insert("trail", &trail);
++    ctx.insert(
++        "current_folder_id",
++        &current_folder_id,
++    );
+     ctx.insert("request_path", "/");
+     render(&state, "index.html", &ctx)
+ }
+diff --git a/src/telegram/service.rs b/src/telegram/service.rs
+index 48841e5..a46a9f9 100644
+--- a/src/telegram/service.rs
++++ b/src/telegram/service.rs
+@@ -1,32 +1,83 @@
++use std::sync::{Arc, OnceLock};
+ use std::time::Duration;
+ 
+ use reqwest::multipart;
+ use serde::Serialize;
++use tokio::sync::Semaphore;
+ 
+ use crate::constants;
+ use crate::telegram::types::*;
+ 
++/// Process-wide upload gate shared by every `sendDocument` call, no matter which
++/// HTTP request spawned it. `TelegramService` is cloned per request, so a permit
++/// stored in the service would only serialize within one file; Telegram however
++/// rate-limits a bot's large-file uploads by accumulated volume, which is exactly
++/// what parallel multi-file uploads trigger. Defaults to one permit (strictly
++/// serial uploads); override with env `TG_SEND_GLOBAL_CONCURRENCY` (1..=4).
++fn global_upload_semaphore() -> Arc<Semaphore> {
++    static SEM: OnceLock<Arc<Semaphore>> = OnceLock::new();
++    SEM.get_or_init(|| {
++        let permits = std::env::var("TG_SEND_GLOBAL_CONCURRENCY")
++            .ok()
++            .and_then(|v| v.trim().parse::<usize>().ok())
++            .filter(|v| (1..=constants::TG_SEND_GLOBAL_CONCURRENCY_MAX).contains(v))
++            .unwrap_or(constants::TG_SEND_GLOBAL_CONCURRENCY_DEFAULT);
++        tracing::info!("Telegram 上传全局并发闸: {} 路", permits);
++        Arc::new(Semaphore::new(permits))
++    })
++    .clone()
++}
++
+ /// Decide whether a Telegram error response should be retried as rate limiting,
+-/// and for how many seconds. Returns `None` when the response is not a 429.
++/// and for how many seconds. Returns `None` for non-rate-limit errors.
+ ///
+-/// Telegram returns HTTP 429 with `{"error_code":429,"parameters":{"retry_after":N}}`.
+-/// We trust either the HTTP status or the body's `error_code`, default to 3s when
+-/// `retry_after` is absent, and cap the wait so a buggy/hostile value cannot stall
+-/// an upload for minutes.
++/// Telegram normally signals flooding with HTTP 429 and
++/// `{"error_code":429,"parameters":{"retry_after":N}}`. For large-file uploads it
++/// also wraps the same flood error in a HTTP 400 response, e.g.
++/// `{"error_code":400,"description":"Bad Request: too Many Requests: retry after 8"}`
++/// (note the non-standard casing). Both shapes must be retried, so besides the
++/// status/error_code we also match the description text and parse the wait out of
++/// it, default to 3s when no wait is given, and cap the wait so a buggy/hostile
++/// value cannot stall an upload for minutes.
+ fn retry_after_secs(status: u16, body: &serde_json::Value) -> Option<u64> {
+-    let is_rate_limited = status == 429 || body["error_code"].as_i64() == Some(429);
++    let desc = body["description"].as_str().unwrap_or("");
++    let desc_lower = desc.to_ascii_lowercase();
++    let is_rate_limited = status == 429
++        || body["error_code"].as_i64() == Some(429)
++        || desc_lower.contains("too many requests")
++        || desc_lower.contains("retry after");
+     if !is_rate_limited {
+         return None;
+     }
++    let from_desc = parse_retry_after_from_desc(desc);
+     let secs = body
+         .get("parameters")
+         .and_then(|p| p.get("retry_after"))
+         .and_then(|v| v.as_u64())
++        .or(from_desc)
+         .unwrap_or(3)
+         .min(60);
+     Some(secs)
+ }
+ 
++/// Extract the wait seconds from a flood description like
++/// `Bad Request: too Many Requests: retry after 8`.
++fn parse_retry_after_from_desc(desc: &str) -> Option<u64> {
++    let lower = desc.to_ascii_lowercase();
++    let idx = lower.find("retry after")?;
++    let tail = &lower[idx + "retry after".len()..];
++    let digits: &str = tail.trim_start();
++    let end = digits
++        .char_indices()
++        .find(|(_, c)| !c.is_ascii_digit())
++        .map(|(i, _)| i)
++        .unwrap_or(digits.len());
++    if end == 0 {
++        return None;
++    }
++    digits[..end].parse::<u64>().ok()
++}
++
+ #[derive(Clone)]
+ pub struct TelegramService {
+     pub bot_token: String,
+@@ -34,6 +85,14 @@ pub struct TelegramService {
+     pub client: reqwest::Client,
+ }
+ 
++/// P1：terminal_orphan 原因前缀（超过 48 小时的频道消息永久不可删）。
++pub const TERMINAL_ORPHAN_PREFIX: &str = "terminal_orphan";
++
++/// 判断 delete_message 返回的原因是否属于 terminal_orphan。
++pub fn is_terminal_orphan_reason(reason: &str) -> bool {
++    reason.starts_with(TERMINAL_ORPHAN_PREFIX)
++}
++
+ #[derive(Debug, Serialize, Default)]
+ pub struct DeleteResult {
+     pub status: String,
+@@ -44,6 +103,23 @@ pub struct DeleteResult {
+     pub main_delete_reason: String,
+     pub is_manifest: bool,
+     pub reason: String,
++    /// P1：超过 48 小时、频道侧永久不可删的分片（terminal_orphan）。
++    pub orphaned_chunks: Vec<String>,
++    /// P1：主消息是否属于 terminal_orphan（超 48h，永久残留）。
++    pub main_orphaned: bool,
++}
++
++impl DeleteResult {
++    /// 主消息「已删」或「超 48h 永久残留」都说明频道侧已不可达，
++    /// 此时可以安全删除数据库行。
++    pub fn main_clear(&self) -> bool {
++        self.main_message_deleted || self.main_orphaned
++    }
++
++    /// terminal_orphan 总数（主消息 + 分片）。
++    pub fn orphaned_count(&self) -> usize {
++        self.orphaned_chunks.len() + usize::from(self.main_orphaned)
++    }
+ }
+ 
+ impl TelegramService {
+@@ -115,6 +191,12 @@ impl TelegramService {
+         filename: &str,
+         reply_to: Option<i64>,
+     ) -> Result<Message, String> {
++        // 在整次调用（含 429/400 flood 的退避等待）期间持有全局许可，保证同一
++        // 时刻只有一个块在打 Telegram；其他文件在本调用退避期间也不会趁虚而入。
++        let _upload_permit = global_upload_semaphore()
++            .acquire_owned()
++            .await
++            .map_err(|e| e.to_string())?;
+         let max_attempts = constants::TG_UPLOAD_MAX_RETRIES.max(1);
+         let mime_type = mime_guess::from_path(filename)
+             .first_or_octet_stream()
+@@ -236,10 +318,33 @@ impl TelegramService {
+                         return (true, "deleted".into());
+                     }
+                     let desc = data["description"].as_str().unwrap_or("");
+-                    if desc.contains("not found") {
++                    let lower = desc.to_lowercase();
++                    if lower.contains("not found") {
+                         return (true, "not_found".into());
+                     }
+-                    last_reason = "error".into();
++                    // P1：超过 48 小时的频道消息，Telegram 返回
++                    // "... message can't be deleted ..."，重试永远不会成功。
++                    // 归为 terminal_orphan（频道侧永久残留），与可重试失败区分。
++                    if lower.contains("can't be deleted") || lower.contains("cant be deleted") {
++                        tracing::warn!(
++                            "deleteMessage 判定 terminal_orphan（超 48h 不可删）msg={} status={} desc={}",
++                            message_id,
++                            status,
++                            self.scrub(desc.to_string())
++                        );
++                        return (
++                            false,
++                            format!("{}: tg_http_{}: {}", TERMINAL_ORPHAN_PREFIX, status, desc),
++                        );
++                    }
++                    // P0：不再丢弃 Telegram 的错误描述（此前这里只写死 "error"）。
++                    last_reason = format!("tg_http_{}: {}", status, desc);
++                    tracing::warn!(
++                        "deleteMessage 失败 msg={} status={} desc={}",
++                        message_id,
++                        status,
++                        self.scrub(desc.to_string())
++                    );
+                     // Non-retryable application error (e.g. no rights)
+                     break;
+                 }
+@@ -309,23 +414,57 @@ impl TelegramService {
+                                     let parts: Vec<&str> = cid.splitn(2, ':').collect();
+                                     if parts.len() == 2 {
+                                         if let Ok(mid) = parts[0].parse::<i64>() {
+-                                            let (ok, _) = tg.delete_message(mid).await;
+-                                            return (cid, ok);
++                                            let (ok, why) = tg.delete_message(mid).await;
++                                            return (cid, ok, why);
+                                         }
+                                     }
+-                                    (cid, false)
++                                    (cid, false, "invalid_chunk_id".to_string())
+                                 }));
+                             }
+ 
++                            let mut first_chunk_error: Option<String> = None;
++                            let mut first_orphan_reason: Option<String> = None;
+                             for handle in handles {
+-                                if let Ok((cid, ok)) = handle.await {
++                                if let Ok((cid, ok, why)) = handle.await {
+                                     if ok {
+                                         result.deleted_chunks.push(cid);
++                                    } else if is_terminal_orphan_reason(&why) {
++                                        // P1：超 48h 的分片删不掉也重试不来，单独计数。
++                                        if first_orphan_reason.is_none() {
++                                            first_orphan_reason = Some(why);
++                                        }
++                                        result.orphaned_chunks.push(cid);
+                                     } else {
++                                        if first_chunk_error.is_none() {
++                                            first_chunk_error = Some(why);
++                                        }
+                                         result.failed_chunks.push(cid);
+                                     }
+                                 }
+                             }
++
++                            // P0：分片失败原因不再被丢弃，汇总进 reason（数量 + 首条描述）。
++                            if let Some(first) = first_chunk_error {
++                                result.reason = format!(
++                                    "{} 个分片删除失败，首条错误: {}",
++                                    result.failed_chunks.len(),
++                                    first
++                                );
++                            }
++
++                            // P1：terminal_orphan 分片单独汇总（不算失败）。
++                            if let Some(first) = first_orphan_reason {
++                                let note = format!(
++                                    "{} 个分片超 48 小时无法删除（已残留）: {}",
++                                    result.orphaned_chunks.len(),
++                                    first
++                                );
++                                result.reason = if result.reason.is_empty() {
++                                    note
++                                } else {
++                                    format!("{} | {}", result.reason, note)
++                                };
++                            }
+                         }
+                     }
+                 }
+@@ -334,11 +473,36 @@ impl TelegramService {
+ 
+         // Delete main message
+         let (main_ok, reason) = self.delete_message(message_id).await;
++        result.main_orphaned = is_terminal_orphan_reason(&reason);
+         result.main_message_deleted = main_ok;
+-        result.main_delete_reason = reason;
++        result.main_delete_reason = reason.clone();
++        // P0：主消息失败时把真实原因透传到 reason（此前该字段恒为空串，
++        // 导致 HTTP 响应里出现 "Telegram 删除失败：" 这种无信息文案）。
++        if result.main_orphaned {
++            // P1：主消息超 48h 不可删 —— 不是失败，但频道侧会永久残留。
++            let note = format!("主消息超 48 小时无法删除（已残留）: {}", reason);
++            result.reason = if result.reason.is_empty() {
++                note
++            } else {
++                format!("{} | {}", result.reason, note)
++            };
++        } else if !main_ok {
++            result.reason = if result.reason.is_empty() {
++                reason
++            } else {
++                format!("{} | 主消息: {}", result.reason, reason)
++            };
++        }
+ 
+-        result.status = if main_ok && result.failed_chunks.is_empty() {
++        let main_clear = result.main_clear();
++        result.status = if main_clear
++            && result.failed_chunks.is_empty()
++            && result.orphaned_chunks.is_empty()
++        {
+             "success".into()
++        } else if main_clear && result.failed_chunks.is_empty() {
++            // P1：全部「已删或超 48h 残留」→ 允许继续删数据库行。
++            "orphaned".into()
+         } else {
+             "partial_failure".into()
+         };
+@@ -419,4 +583,35 @@ mod tests {
+         let body = json!({ "ok": false, "error_code": 400, "description": "Bad Request: chat not found" });
+         assert_eq!(retry_after_secs(400, &body), None);
+     }
++
++    #[test]
++    fn retry_after_detects_400_wrapped_flood_variant() {
++        // Observed in production: flood control wrapped in HTTP 400.
++        let body = json!({
++            "ok": false,
++            "error_code": 400,
++            "description": "Bad Request: too Many Requests: retry after 8"
++        });
++        assert_eq!(retry_after_secs(400, &body), Some(8));
++    }
++
++    #[test]
++    fn retry_after_400_wrapped_variant_defaults_to_3s() {
++        let body = json!({
++            "ok": false,
++            "error_code": 400,
++            "description": "Bad Request: Too Many Requests"
++        });
++        assert_eq!(retry_after_secs(400, &body), Some(3));
++    }
++
++    #[test]
++    fn retry_after_is_capped_at_60s_when_parsed_from_description() {
++        let body = json!({
++            "ok": false,
++            "error_code": 400,
++            "description": "Bad Request: too Many Requests: retry after 500"
++        });
++        assert_eq!(retry_after_secs(400, &body), Some(60));
++    }
+ }

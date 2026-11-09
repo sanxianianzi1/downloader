@@ -161,10 +161,73 @@ handler 在 `api_bot.rs` 内与 `/api/bot/*` 共用（单一实现两处挂载�
 
 ### 配套（不在本补丁内）
 
-- bot-worker：/setcookie（仅写入 Cookie，不再自动重派旧任务）、/retry（手动重试）
+- bot-worker：/setcookiefile 文件方式写入（唯一写入通道）、/setcookie 查看状态、/retry（手动重试）、
+  夸克 Cookie 保活（周期剥离 __puus 请求 /config 续期，读/写走本节的两个端点）
 - workflow：Validate link 步骤优先从 tgstate 拉 Cookie，回落 Secret GOPEED_COOKIE；
-  失败通知在预检 412/403 时提示 /setcookie 补法
+  下载前做一次 __puus 惰性刷新并回写本端点；失败通知在预检 412/403 时提示 /setcookiefile 补法
 
 ### 验证
 
     curl -s -H "X-Bot-Key: $TGSTATE_BOT_KEY" http://127.0.0.1:8000/api/bot/quark-cookie
+
+## tgstate-rust-429-flood-hardening.patch
+
+加固 Telegram 上传的限流处理，解决并行上传多文件时被 flood control 卡死的问题。
+
+- 基线：上游 `bf4253a`（v2.1.7）+ 前四个补丁
+- 改动：`src/constants.rs`（+11）、`src/telegram/service.rs`（+38）
+- 新增环境变量：`TG_SEND_GLOBAL_CONCURRENCY`（1..=4，默认 1 = 全局串行上传）
+
+### 内容
+
+- `TG_UPLOAD_MAX_RETRIES` 4 → 8
+- 新增进程级全局上传信号量 `global_upload_semaphore()`：Telegram 按**累计体积**
+  对 bot 的大文件上传限流，并行多文件上传最容易触发；默认全局限流为 1 路
+- `retry_after_secs` 识别 **400 包装的 flood 变体**
+  （`Bad Request: too Many Requests: retry after N`，注意非标准大小写），
+  从 description 解析等待秒数，上限 60s，附 3 个单元测试
+
+## tgstate-rust-ssr-batch-move.patch
+
+网页面板加**批量移动**按钮：选中多个文件 → 输入目标目录路径（`/` = 根，
+`/影视/2026` 逐层解析）→ 逐个调 `/api/files/:id/move`，汇总成功/失败数。
+
+- 基线：上游 `bf4253a`（v2.1.7）+ 前五个补丁
+- 改动：纯前端 `app/static/js/main.js`、`app/templates/index.html`
+- 无后端改动（复用 move 端点）
+
+## tgstate-rust-v2.1.7-cumulative-fix.patch
+
+**累计补丁**：基线 `bf4253a` 到 VPS 当前工作区的全部未提交改动
+（6 个历史补丁 + 本节 48h 孤儿修复，13 文件 +1720/−32，含新文件 `api_bot.rs`）。
+新机器复原时用它一个补丁即可替代以上全部；上游升级时也以它为重新 diff 的起点。
+
+- 来源：VPS `/root/patches/tgstate-v2.1.7-fix.patch`，2026-11-09 导出
+- 已验证：`git apply --check -R` 可干净回滚；`cargo test` 19 passed；
+  运行时验收（容器 healthy、13918 老文件删除成功、成功路径回归）通过
+- 辅助文件 `Dockerfile.check`（tgstate-checker:1.87 检查镜像）在补丁外，随 compose 目录留存
+
+### 48h 孤儿修复内容（本次新增，`terminal_orphan` 语义）
+
+背景：Telegram Bot API 硬限制 `deleteMessage` 只能删 48 小时内的消息。
+老文件删除时主消息/分片返回 `Bad Request: message can't be deleted`，
+修复前原因被写死成 `"error"` 丢弃、整单误报 500、DB 行永久卡住。
+
+- **P0 可观测性**：`delete_message` 失败原因保留 `tg_http_<status>: <description>`
+  并落 `tracing::warn!`；分片失败汇总「N 个分片删除失败，首条错误: …」
+- **P1 终态分类**：`can't be deleted`/`cant be deleted`（大小写不敏感）归类为
+  `terminal_orphan`——永久残留、重试无意义，与可重试失败（限流 `rate_limited_Ns`、
+  网络错误）严格区分；`DeleteResult` 新增 `orphaned_chunks`/`main_orphaned` 字段与
+  `main_clear()`/`orphaned_count()`；主消息「已删或超 48h」即允许删 DB 行；
+  全部分片「已删或超 48h」时状态为 `orphaned`，任一分片非终态失败则为
+  `partial_failure`（面板/批量/级联删除同语义）
+- **P2 逃生口**：`DELETE /api/bot/files/:id?force_db=1` 跳过 Telegram 只删 DB 行，
+  用于 TG 侧故障时的人工清理
+- 面板与批量删除（`api_files.rs`）同步改用 `main_clear()` 并在响应里回传
+  `tg_orphaned`/`orphaned_count`；bot-worker 的 /rm 会把残留条数转告用户
+
+### 回滚（VPS）
+
+    cd /root/downloader/downloader/tgstate-rust
+    git apply -R /root/patches/tgstate-v2.1.7-fix.patch
+    cd .. && docker compose build tgstate && docker compose up -d tgstate

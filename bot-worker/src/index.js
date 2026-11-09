@@ -641,7 +641,17 @@ async function cmdRm(chatId, args) {
     method: "DELETE",
   });
   if (!res.ok) {
+    // 服务端 200=ok / 500=partial_failure(主已删) / 502=delete_failed(主未删)。
+    // partial_failure 且 db=deleted 时记录已清理，重试只会得到"文件不存在"。
+    const code = res.data && res.data.code;
+    const dbDeleted =
+      res.data && res.data.details && res.data.details.db === "deleted";
     let message = mapTgError(res);
+    if (code === "partial_failure" && dbDeleted) {
+      message +=
+        "\n面板记录已随主文件一起删除，请勿再重试 /rm；失败的分块只残留在频道侧。";
+      return sendTelegramMessage(chatId, message);
+    }
     if (/\.part$/i.test(file.filename)) {
       message +=
         "\n这是未完成上传遗留的 .part 残留：tgstate 只有删掉 Telegram 主消息才删数据库行，" +
@@ -653,9 +663,21 @@ async function cmdRm(chatId, args) {
   const detail = res.data && res.data.details ? res.data.details : null;
   const tg = detail && detail.tg ? detail.tg : null;
   const failedChunks = tg && Array.isArray(tg.failed_chunks) ? tg.failed_chunks.length : 0;
+  // terminal_orphan（超 48h 永久残留）总数：优先取服务端汇总，缺省时分片数+主消息。
+  const orphaned =
+    res.data && Number.isFinite(res.data.orphaned_count)
+      ? res.data.orphaned_count
+      : tg && Array.isArray(tg.orphaned_chunks)
+        ? tg.orphaned_chunks.length + (tg.main_orphaned ? 1 : 0)
+        : 0;
   const lines = [`已删除：${file.filename}`];
   if (failedChunks > 0) {
     lines.push(`注意：有 ${failedChunks} 个分块删除失败，可稍后重试或检查 tgstate 日志。`);
+  }
+  if (orphaned > 0) {
+    lines.push(
+      `另有 ${orphaned} 条频道消息因超过 48 小时已永久无法删除，将残留在频道中（面板记录已清理）。`
+    );
   }
   await sendTelegramMessage(chatId, lines.join("\n"));
 }
